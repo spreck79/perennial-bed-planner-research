@@ -466,15 +466,29 @@ def make_id(pk, used_ids):
     return cand
 
 def make_code(pk, used_codes):
-    words = re.findall(r"[A-Za-z]+", pk["common"] or pk["latin"])
+    """The label drawn on the plan: up to 4 letters from the common name, the same pattern the website's checker enforces.
+    One word: first 4 letters (Foam); two words: 2 letters of each (WiGe); three or more: first letter of each word (WBPh)."""
+    name = pk["common"] or pk["latin"]
+    words = [w for w in re.split(r"[^A-Za-z]+", re.sub(r"['\u2019]s\b", "s", re.sub(r"'[^']*'", "", name))) if w] or ["Plant"]
+    taken = {c.lower() for c in used_codes}
     tries = []
-    if len(words) >= 2: tries.append(words[0][0].upper() + words[1][0].lower())
-    w = words[0] if words else "Pl"
-    tries += [w[0].upper() + c.lower() for c in w[1:]]
-    tries += [w[0].upper() + c for c in "abcdefghijklmnopqrstuvwxyz"]
+    if len(words) == 1:
+        w = words[0]; tries.append(w[:4].capitalize())
+        cons = w[0] + "".join(ch for ch in w[1:] if ch.lower() not in "aeiou")      # drop vowels: Hosta -> Hst...
+        tries += [cons[:4].capitalize(), (w[0] + w[2:5]).capitalize(), (w[:3] + w[-1]).capitalize()]
+    elif len(words) == 2:
+        a, b = words
+        tries += [a[:2].capitalize() + b[:2].capitalize(), a[:1].upper() + b[:3].capitalize(), a[:3].capitalize() + b[:1].upper(),
+                  a[:2].capitalize() + b[0].upper() + (b[2:3] or "")]
+    else:
+        ini = "".join(w[0].upper() for w in words[:4])
+        tries += [ini + (words[-1][1:2] if len(ini) < 4 else ""), ini[:3], words[0][:2].capitalize() + words[-1][:2].capitalize()]
     for t in tries:
-        if t not in used_codes: return t
-    return "??"
+        if 2 <= len(t) <= 4 and t.lower() not in taken: return t
+    base = (words[0][:3]).capitalize()
+    for ch in "abcdefghijklmnopqrstuvwxyz":
+        if (base + ch).lower() not in taken: return base + ch
+    return "????"
 
 def draft(pk, used_ids, used_codes):
     F = lambda k: (pk["facts"].get(k) or {}).get("value")
