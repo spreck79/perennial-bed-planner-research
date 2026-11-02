@@ -43,6 +43,14 @@ and polite to the websites. Use --fresh to ignore the cache.
 """
 import html, html.parser, json, os, re, sys, time, urllib.parse, urllib.request, urllib.error, hashlib, datetime
 
+# Check websites' security certificates with the computer's own certificate store (the same one the browser uses),
+# so sites whose certificate chain needs Windows to fill in a missing link still work. Falls back to Python's own.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except Exception:
+    pass
+
 # when built as a Windows program, keep the inbox next to the .exe (not in the temporary unpack folder)
 HERE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 INBOX = os.path.join(HERE, "inbox")
