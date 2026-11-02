@@ -34,7 +34,9 @@ sources, a copy of every page it read, and free-licensed photo choices with thei
 
 The list you type is kept for next time (`new-plants.txt` beside the .exe), and the results go in an `inbox` folder beside it:
 
-- `report.html` (and `report.md`): each plant's facts with their sources, a draft plants.js entry, and what's still missing
+- `report.html` (and `report.md`): each plant's facts with their sources, a complete draft plants.js entry (size, bloom, color from the
+  sources and photo, light, moisture, deer, toxicity, notes, code, photo credit), and a short list of things to double-check
+  (for example a plant that isn't hardy in zone 6B)
 - `<id>\photo-1.jpg` to `photo-3.jpg`: the photo choices (credits are in the report)
 - `<id>\pages\`: the text of every page it read, with the link at the top
 

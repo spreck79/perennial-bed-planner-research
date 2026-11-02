@@ -237,9 +237,29 @@ def src_mbg(pk):
     pk["missing"].append("Missouri Botanical Garden Plant Finder " + ("couldn't be reached" if unreachable(MBG) else "had no page for it")
                          + " (tried: " + ", ".join(tried) + ")")
 
-NCSU_LABELS = ["Height", "Width", "Light", "Soil Drainage", "Flower Bloom Time", "Flower Color", "Resistance To Challenges",
+NCSU_LABELS = ["Height", "Width", "Plant Type", "Habit/Form", "Light", "Soil Drainage", "Soil Texture", "USDA Plant Hardiness Zone",
+               "Flower Bloom Time", "Flower Color", "Flower Description", "Leaf Color", "Leaf Description", "Resistance To Challenges",
                "Poison Severity", "Poison Symptoms", "Poison Toxic Principle", "Causes Contact Dermatitis", "Poison Part",
-               "Life Cycle", "Woody Plant Leaf Characteristics", "Country Or Region Of Origin", "Distribution", "Wildlife Value"]
+               "Life Cycle", "Landscape Location", "Country Or Region Of Origin", "Distribution", "Wildlife Value", "Maintenance"]
+
+def labelled_lists(text, labels):
+    """NC State style: 'Label:' then one value per line until the next 'Something:' line. Values joined with '; '."""
+    out, lines = {}, [l.strip() for l in text.splitlines()]
+    is_label = lambda l: bool(re.fullmatch(r"[A-Z][A-Za-z/ ,&()'-]{1,45}:", l))
+    for lab in labels:
+        for i, l in enumerate(lines):
+            if l.lower() == lab.lower() + ":":
+                vals = []
+                for l2 in lines[i + 1:]:
+                    if not l2: continue
+                    if is_label(l2) or l2.startswith(("Download", "×")): break
+                    vals.append(l2)
+                    if len(vals) >= 12: break
+                if vals: out[lab] = "; ".join(vals)
+                break
+            if l.lower().startswith(lab.lower() + ":") and len(l) > len(lab) + 1:      # value on the same line ("Height: 1 ft...")
+                out[lab] = l[len(lab) + 1:].strip(); break
+    return out
 
 def src_ncsu(pk):
     tries = [binomial(pk["latin"])] + pk["synonyms"]
@@ -253,8 +273,12 @@ def src_ncsu(pk):
         if "Height" not in text: continue
         save_page(pk, "nc-state-plant-toolbox", url, text)
         if len(q.split()) == 1 and len(binomial(pk["latin"]).split()) > 1: pk["warn"].append(f"NC State: used its page for the whole genus ({q})")
-        for k, v in labelled(text, NCSU_LABELS).items():
-            pk["facts"]["ncsu_" + k.lower().replace(" ", "_")] = {"value": v, "src": "NC State Extension Plant Toolbox", "url": url}
+        for k, v in labelled_lists(text, NCSU_LABELS).items():
+            pk["facts"]["ncsu_" + re.sub(r"[^a-z]+", "_", k.lower()).strip("_")] = {"value": v, "src": "NC State Extension Plant Toolbox", "url": url}
+        m = re.search(r"This plant has (low|medium|high) severity poison characteristics", text, re.I)
+        if m: pk["facts"]["ncsu_poison_severity"] = {"value": m.group(1).capitalize(), "src": "NC State Extension Plant Toolbox", "url": url}
+        m = re.search(r"(?s)\nDescription\n+(.+?)(?:\n(?:VIDEO|Profile Video|See this plant|Cultivars / Varieties|Tags):)", text)
+        if m: pk["facts"]["ncsu_description"] = {"value": re.sub(r"\s+", " ", m.group(1)).strip()[:1500], "src": "NC State Extension Plant Toolbox", "url": url}
         return
     pk["missing"].append("NC State Plant Toolbox " + ("couldn't be reached" if unreachable("https://plants.ces.ncsu.edu/") else "had no page for it"))
 
@@ -490,34 +514,247 @@ def make_code(pk, used_codes):
         if (base + ch).lower() not in taken: return base + ch
     return "????"
 
+# ---- turning the facts into finished planner fields
+
+SEASONS = {"spring": (4.0, 6.0), "summer": (6.0, 9.0), "fall": (9.0, 10.5), "autumn": (9.0, 10.5), "winter": (3.0, 4.0)}
+def bloom_from(mbg, ncsu):
+    b = bloom_months(mbg)
+    if b: return b, "Missouri Botanical Garden bloom time"
+    ss = [SEASONS[w.lower()] for w in re.findall(r"(?i)\b(spring|summer|fall|autumn|winter)\b", ncsu or "")]
+    if ss: return [min(a for a, _ in ss), max(b2 for _, b2 in ss)], "NC State bloom seasons"
+    return None, ""
+
+def zone_name(z): return f"{int(z)}{'b' if z % 1 else 'a'}"
+
+def zone_range(mbg_zone, ncsu_zone):
+    """-> (low, high) as numbers like 6.5 for 6b, or None"""
+    m = re.search(r"(\d+)\s*(?:to|-)\s*(\d+)", mbg_zone or "")
+    if m: return float(m.group(1)), float(m.group(2)) + 0.5
+    zs = [int(n) + (0.5 if l.lower() == "b" else 0) for n, l in re.findall(r"\b(\d{1,2})([ab])\b", ncsu_zone or "")]
+    if zs: return min(zs), max(zs)
+    return None
+
+def moisture_from(mbg_water, ncsu_drain):
+    w = moisture_words(mbg_water)
+    if w: return w
+    d = (ncsu_drain or "").lower()
+    if not d: return None
+    dry, wet = "dry" in d, ("wet" in d or "standing water" in d)
+    moist = "moist" in d
+    if wet: return "Moist to wet"
+    if dry and moist: return "Dry to moist"
+    if dry: return "Dry to average"
+    if moist: return "Average to moist"
+    return "Average"
+
+def light_words(sun, soil_bits):
+    phrase = {("full",): "Full sun", ("full", "part"): "Sun to part shade", ("part",): "Part shade",
+              ("part", "shade"): "Part shade to shade", ("shade",): "Shade", ("full", "part", "shade"): "Sun to shade"}.get(tuple(sun or ()), None)
+    if not phrase: return None
+    return phrase + ("; " + soil_bits if soil_bits else "")
+
+def soil_words(moist, texture, drain):
+    bits = []
+    t = (texture or "").lower(); d = (drain or "").lower()
+    if "organic" in t or "rich" in t: bits.append("rich")
+    if moist and "moist" in moist.lower(): bits.append("moist")
+    if moist and moist.lower().startswith("dry"): bits.append("dry to average")
+    if "good drainage" in d or "well-drained" in d: bits.append("well-drained")
+    return (", ".join(bits) + " soil") if bits else ""
+
+COLOR_NAMES = [("white", (245, 245, 240)), ("cream", (240, 232, 205)), ("yellow", (240, 205, 60)), ("gold", (225, 165, 30)), ("orange", (235, 125, 40)),
+               ("red", (200, 40, 45)), ("burgundy", (125, 30, 55)), ("pink", (235, 140, 175)), ("rose", (205, 85, 125)), ("magenta", (195, 60, 150)),
+               ("lavender", (190, 160, 220)), ("purple", (125, 70, 160)), ("blue", (85, 120, 205)), ("green", (110, 150, 90)), ("brown", (130, 95, 65))]
+def color_name(rgb):
+    return min(COLOR_NAMES, key=lambda c: sum((a - b) ** 2 for a, b in zip(rgb, c[1])))[0]
+
+def photo_color(path, foliage=False):
+    """The main flower color in a photo (or the leaf green for ferns and grasses). Needs Pillow; returns '#RRGGBB' or None."""
+    try:
+        from PIL import Image
+        import colorsys
+    except Exception:
+        return None
+    try:
+        im = Image.open(path).convert("RGB"); im.thumbnail((160, 120))
+        w, h = im.size; px = list(im.getdata())
+    except Exception:
+        return None
+    bins = {}
+    for k, (r, g, b) in enumerate(px):
+        x, y = k % w, k // w
+        centre = 1.0 + 0.8 * (1 - (abs(x - w / 2) / (w / 2) + abs(y - h / 2) / (h / 2)) / 2)   # the subject is usually near the middle
+        hh, ss, vv = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+        green = 0.17 <= hh <= 0.47
+        if foliage:
+            if not green or ss < 0.18 or vv < 0.2: continue
+            key = "g"
+        else:
+            if vv < 0.22: continue
+            if ss < 0.12 and vv > 0.82: key = "white"                          # white and pale flowers
+            elif green or ss < 0.22 or (0.05 <= hh <= 0.13 and vv < 0.55): continue   # leaves, sky-greys, soil and shadows
+            else: key = int(hh * 24) % 24
+        weight = centre * (1.6 if key == "white" else (0.5 + ss) * vv)
+        bt = bins.setdefault(key, [0.0, 0.0, 0.0, 0.0]); bt[0] += weight; bt[1] += r * weight; bt[2] += g * weight; bt[3] += b * weight
+    if not bins: return None
+    key, (wt, R, G, B) = max(bins.items(), key=lambda kv: kv[1][0])
+    if not foliage and key == "white" and len(bins) > 1:
+        others = sorted((v for k2, v in bins.items() if k2 != "white"), key=lambda v: -v[0])
+        if others and others[0][0] > wt * 0.9: wt, R, G, B = others[0]       # only call it white when white clearly wins
+    rgb = tuple(int(c / wt) for c in (R, G, B))
+    if not foliage:   # soften towards the planner's pastel-ish palette so labels stay readable
+        rgb = tuple(int(c * 0.85 + 255 * 0.15) for c in rgb)
+    return "#%02X%02X%02X" % rgb
+
+# Planner-style colors for the words sources use. Order matters: the first word found in the text wins,
+# and two-word colors are checked before single words.
+WORD_HEX = [("blue-violet", "#5F63C0"), ("violet-blue", "#5F63C0"), ("blue-lavender", "#C2C5EE"), ("pink-lavender", "#D3A2D3"),
+            ("lavender-blue", "#AEB4E6"), ("blue-purple", "#6A5FC0"), ("purple-blue", "#6A5FC0"), ("rose-pink", "#D96E95"), ("red-orange", "#E2603A"),
+            ("yellow-green", "#C5D86A"), ("blue-green", "#9DB2A0"), ("gray-green", "#A7B29C"), ("grey-green", "#A7B29C"),
+            ("chartreuse", "#C5D86A"), ("lime", "#C5D86A"), ("silver", "#BFC3B8"), ("variegated", "#B9CF95"),
+            ("white", "#F3F1E6"), ("cream", "#F0E8CD"), ("ivory", "#F3F0DE"), ("yellow", "#F2D04A"), ("gold", "#E8B23A"), ("orange", "#EE8A3C"),
+            ("scarlet", "#D2453F"), ("red", "#D2453F"), ("burgundy", "#8E2E4A"), ("maroon", "#8E2E4A"), ("crimson", "#B8324A"),
+            ("magenta", "#C2509C"), ("fuchsia", "#C2509C"), ("rose", "#D06A8E"), ("pink", "#E59AB8"), ("mauve", "#C8A2C0"),
+            ("lilac", "#C9B0E0"), ("lavender", "#C2A9DE"), ("violet", "#6E4FB0"), ("purple", "#8A5FC2"), ("blue", "#6C8FD8"),
+            ("green", "#7FAA6C"), ("bronze", "#A67C4E"), ("brown", "#8C6A4A"), ("copper", "#B8733E")]
+def word_hex(text):
+    t = re.sub(r"\b\w+ish\b[- ]?", "", (text or "").lower()); best = None          # 'greenish-white' -> 'white'
+    pale = re.search(r"\b(pale|soft|light|pastel)\b", t)
+    for w, hx in WORD_HEX:
+        k = t.find(w)
+        if k >= 0 and (best is None or k < best[0] or (k == best[0] and len(w) > best[2])): best = (k, hx, len(w))
+    if not best: return None
+    hx = best[1]
+    if pale:
+        hx = "#%02X%02X%02X" % tuple(int(int(hx[i:i + 2], 16) * 0.55 + 255 * 0.45) for i in (1, 3, 5))
+    return hx
+
+def refine_with_photo(hexc, path):
+    """Nudge a named color toward the photo's real shade, using only photo pixels close to that hue."""
+    try:
+        from PIL import Image
+        import colorsys
+        im = Image.open(path).convert("RGB"); im.thumbnail((160, 120)); px = list(im.getdata())
+    except Exception:
+        return hexc
+    r0, g0, b0 = (int(hexc[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    h0, s0, v0 = colorsys.rgb_to_hsv(r0, g0, b0)
+    if s0 < 0.15: return hexc                     # whites and creams: keep the clean planner shade
+    acc, n = [0, 0, 0], 0
+    for (r, g, b) in px:
+        hh, ss, vv = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+        dh = min(abs(hh - h0), 1 - abs(hh - h0))
+        if dh < 0.05 and ss > 0.25 and vv > 0.3: acc[0] += r; acc[1] += g; acc[2] += b; n += 1
+    if n < len(px) * 0.02: return hexc            # not enough of that color in the photo to trust it
+    pr = [c / n for c in acc]
+    mix = [int(0.5 * a * 255 + 0.5 * b) for a, b in zip((r0, g0, b0), pr)]
+    return "#%02X%02X%02X" % tuple(mix)
+
+def label_color(hexc):
+    r, g, b = (int(hexc[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    lin = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    return "#2E3A2C" if L > 0.32 else "#FFFFFF"
+
+GOOD = re.compile(r"(?i)\b(attract|pollinat|butterfl|bees?\b|hummingbird|bloom|flower|foliage|leaves|fall color|evergreen|groundcover|ground cover|shade|deer|rabbit|native|edging|border|spread|clump|drought|long-lived|easy|low.maintenance|fragran)")
+SKIP = re.compile(r"(?i)\b(named (after|for)|genus|etymolog|is native to|native range|synonym|botanist|derived from|latin|greek|USDA|zone|cultivar names?|commonly called|family \()")
+CARE = re.compile(r"(?i)\b(soil|water|mulch|fertil|stak|deadhead|propagat|divid|plant(ed|ing)? (in|at)|grown? (best|in)|needs?\b|prefers?\b|tolerat|cut back|store)")
+def draft_notes(*texts):
+    """Two plain sentences on why it's worth growing, picked from the sources' descriptions (Claude rewords them)."""
+    scored = []
+    for t in texts:
+        for k, snt in enumerate(re.split(r"(?<=[.!])\s+", t or "")):
+            snt = snt.strip()
+            if not (30 <= len(snt) <= 230) or SKIP.search(snt): continue
+            score = 2 * len(re.findall(r"(?i)attract|pollinat|butterfl|hummingbird|\bbees?\b|bloom|flower|foliage|fall colou?r|evergreen|fragran|showy|long-lived", snt))
+            score += len(GOOD.findall(snt)) - 3 * bool(CARE.search(snt)) - 0.05 * k
+            if score > 0 and snt not in [x[1] for x in scored]: scored.append((score, snt))
+    if not scored: return None
+    scored.sort(key=lambda x: -x[0])
+    out = scored[0][1]
+    if len(scored) > 1 and len(out) + len(scored[1][1]) < 260: out += " " + scored[1][1]
+    return out
+
+def kind_from(fam, mbg_type, ncsu_type, blurb):
+    t = ((mbg_type or "") + " " + (ncsu_type or "")).lower()
+    if fam in FERN_FAMS or "fern" in t: return "fern", "family or plant type"
+    if fam in ("Poaceae", "Cyperaceae", "Juncaceae") or "grass" in t or "sedge" in t: return "grass", "family or plant type"
+    if "bulb" in t: return "bulb", "plant type says bulb"
+    if "ground cover" in t or "groundcover" in t or re.search(r"(?i)ground ?cover|stolon|forms? (a )?(dense )?(mat|carpet|colon)", blurb or ""):
+        return "mat", "described as a groundcover"
+    return "clump", "no sign of fern, grass, bulb or groundcover"
+
 def draft(pk, used_ids, used_codes):
     F = lambda k: (pk["facts"].get(k) or {}).get("value")
+    W = pk["warn"]
     h = feet_range(F("mbg_height")) or feet_range(F("ncsu_height"))
     sp = feet_range(F("mbg_spread")) or feet_range(F("ncsu_width"))
     fam = F("family") or ""
-    kind = "fern" if fam in FERN_FAMS else "grass" if fam in ("Poaceae", "Cyperaceae", "Juncaceae") else "clump"
-    if fam in ("Amaryllidaceae", "Liliaceae") and re.search(r"(?i)bulb", F("mbg_type") or ""): kind = "bulb"
-    blurb = " ".join(str(F(k) or "") for k in ("mbg_culture", "mbg_noteworthy_characteristics", "mbg_suggested_use", "mbg_garden_uses"))
-    if kind == "clump" and re.search(r"(?i)ground ?cover|stolon|forms? (a )?(dense )?(mat|carpet|colon)", blurb): kind = "mat"
+    blurb = " ".join(str(F(k) or "") for k in ("mbg_culture", "mbg_noteworthy_characteristics", "mbg_suggested_use", "mbg_garden_uses", "ncsu_description"))
+    kind, why_kind = kind_from(fam, F("mbg_type"), F("ncsu_plant_type"), blurb)
     if re.search(r"(?i)\bdorman(t|cy)\b|ephemeral|dies back|disappears? (by|in) (mid|early|late)?\s?summer", blurb):
-        pk["warn"].append("the notes mention dormancy: decide whether it needs 'dormant: true'")
+        W.append("a source mentions it going dormant: 'dormant: true' may be needed")
+    zr = zone_range(F("mbg_zone"), F("ncsu_usda_plant_hardiness_zone"))
+    if zr:
+        pk["facts"]["hardy_in_6b"] = {"value": "yes" if zr[0] <= 6.5 <= zr[1] else "NO",
+                                      "src": "Missouri Botanical Garden" if F("mbg_zone") else "NC State",
+                                      "url": "", "note": f"hardiness zones {zone_name(zr[0])} to {zone_name(zr[1])} (Michigan here is 6B)"}
+        if not (zr[0] <= 6.5 <= zr[1]): W.append(f"NOT hardy in Michigan zone 6B (sources say zones {zone_name(zr[0])} to {zone_name(zr[1])}): it won't come back each year, so it doesn't belong in the planner")
     lists = F("michigan_lists") or []
     native = bool([x for x in lists if not x.get("flagged")])
-    toxic = [a for a in ("dogs", "cats") if F("aspca_" + a) == "toxic"]
-    e = {"id": make_id(pk, used_ids), "code": make_code(pk, used_codes), "name": pk["common"] or (F("mbg_common_name") or "").title() or "?",
-         "latin": pk["latin"], "native": native, "kind": kind,
+    # light and sun
+    light_src = F("mbg_sun") or F("ncsu_light")
+    sun = sun_list(light_src)
+    moist = moisture_from(F("mbg_water"), F("ncsu_soil_drainage"))
+    light = light_words(sun, soil_words(moist, F("ncsu_soil_texture"), F("ncsu_soil_drainage"))) or light_src
+    # bloom and color
+    bloom, why_bloom = (None, "") if kind in ("fern", "grass") else bloom_from(F("mbg_bloom_time"), F("ncsu_flower_bloom_time"))
+    if kind not in ("fern", "grass") and not bloom: W.append("no bloom time found: grown for its leaves? (bloom: null)")
+    foliage = kind in ("fern", "grass") or bloom is None
+    src_colors = F("mbg_bloom_description") or F("ncsu_flower_color") or ""
+    photo1 = os.path.join(INBOX, pk["photos"][0]["saved_as"]) if pk["photos"] else None
+    many = len([c for c in re.split(r"[;,/]", src_colors) if c.strip()]) > 3
+    words_for_hex = (F("ncsu_leaf_color") or "green") if foliage else ("" if many else src_colors)
+    hexc, how_hex = word_hex(words_for_hex), "the color named by the sources"
+    if hexc and photo1: hexc = refine_with_photo(hexc, photo1)
+    if not hexc and many and photo1: hexc, how_hex = photo_color(photo1, foliage), "main color of photo 1 (sold in many colors)"
+    if not hexc and photo1: hexc, how_hex = photo_color(photo1, foliage), "main color of photo 1 (no source named a color)"
+    if foliage:
+        color = (F("ncsu_leaf_color") or "Green").split(";")[0].strip() + " leaves"
+    elif src_colors and not many:
+        color = re.sub(r"\s*;\s*", " / ", src_colors).strip().capitalize()
+    elif hexc:
+        color = "Many colors (" + color_name(tuple(int(hexc[i:i + 2], 16) for i in (1, 3, 5))) + " shown)" if many else color_name(tuple(int(hexc[i:i + 2], 16) for i in (1, 3, 5))).capitalize()
+    else:
+        color = None
+    if how_hex.startswith("main") and hexc and src_colors and not many and not foliage:
+        named = color_name(tuple(int(hexc[i:i + 2], 16) for i in (1, 3, 5)))
+        if named not in src_colors.lower() and not (named in ("cream", "white") and re.search(r"(?i)white|cream", src_colors)):
+            W.append(f"the photo's main color looks {named}, the sources say '{src_colors}': check the photo or the color")
+    if not hexc: hexc = "#6E9A5B" if foliage else "#C9A9D6"; W.append("couldn't read a color from the photo: hex is a placeholder")
+    # safety
+    toxic, why_tox = [], []
+    sev = F("ncsu_poison_severity")
+    if sev: toxic.append("people"); why_tox.append(f"NC State notes {sev.lower()}-severity poison")
+    tox_pets = [a for a in ("dogs", "cats") if F("aspca_" + a) == "toxic"]
+    toxic += tox_pets
+    if tox_pets: why_tox.insert(0, "ASPCA lists it as toxic to " + " and ".join(tox_pets))
+    notes = draft_notes(F("mbg_noteworthy_characteristics"), F("ncsu_description"), F("mbg_culture"), F("ncsu_flower_description"))
+    filler = kind == "mat" and h and h[1] <= 12
+    e = {"id": make_id(pk, used_ids), "code": make_code(pk, used_codes), "name": pk["common"] or (F("mbg_common_name") or "").title() or pk["latin"],
+         "latin": pk["latin"], "native": native, "kind": kind, "filler": True if filler else None,
          "hLo": h[0] if h else None, "hHi": h[1] if h else None,
          "spacing": (round((sp[0] + sp[1]) / 2) if sp else None),
-         "bloom": None if kind in ("fern", "grass") else bloom_months(F("mbg_bloom_time") or F("ncsu_flower_bloom_time")),
-         "color": F("mbg_bloom_description") or F("ncsu_flower_color"), "hex": None, "txt": None,
-         "light": F("mbg_sun") or F("ncsu_light"), "sun": sun_list(F("mbg_sun") or F("ncsu_light")),
-         "moisture": moisture_words(F("mbg_water")), "notes": None,
-         "deer": F("deer"), "toxic": (toxic or None), "toxSrc": ("ASPCA lists it as toxic to " + " and ".join(toxic)) if toxic else None,
+         "bloom": bloom, "color": color, "hex": hexc, "txt": label_color(hexc),
+         "light": light, "sun": sun, "moisture": moist, "notes": notes,
+         "deer": F("deer"), "toxic": (toxic or None), "toxSrc": ("; ".join(why_tox) if toxic else None),
          "fam": "daisy" if fam == "Asteraceae" else None,
          "credit": ({"file": pk["photos"][0]["file"].replace(" ", "_"), "by": pk["photos"][0]["by"], "lic": pk["photos"][0]["lic"]} if pk["photos"] else None)}
     pk["draft"] = {k: v for k, v in e.items() if v not in (None, [], "")}
-    pk["to_finish"] = [k for k in ("name", "hLo", "hHi", "spacing", "light", "sun", "moisture", "color", "hex", "txt", "notes", "credit") if e.get(k) in (None, "", "?")]
-    if kind in ("clump", "mat"): pk["to_finish"].append(f"kind (clump, mat, fern, grass or bulb: guessed '{kind}')")
+    if "bloom" not in pk["draft"]: pk["draft"]["bloom"] = None
+    pk["how"] = {"kind": why_kind, "bloom": why_bloom or ("fern/grass" if kind in ("fern", "grass") else "not found"),
+                 "hex": how_hex, "notes": "picked from the source descriptions"}
+    pk["to_finish"] = [k for k in ("name", "hLo", "hHi", "spacing", "light", "sun", "moisture", "color", "notes", "credit") if e.get(k) in (None, "", [])]
     used_ids.add(e["id"]); used_codes.add(e["code"])
 
 # ---------------------------------------------------------------- run
@@ -576,7 +813,7 @@ def read_list(args):
 
 def report(packets):
     out = [f"# New plant research ({datetime.date.today().isoformat()})", "",
-           "Made by gather_plants.py. Facts are what the sources say; check them, finish the entry, then follow ADDING-A-PLANT.md.", ""]
+           "Made by Plant Research. Every field of the draft entry is filled from the sources and photo 1; Claude checks it against the saved pages and the Check notes, then adds the plant with ADDING-A-PLANT.md.", ""]
     for pk in packets:
         out += [f"## {pk['common'] or pk['latin']} (*{pk['latin']}*)", ""]
         if pk.get("already"): out += [f"**Already in the planner as {pk['already']}.**", ""]
@@ -595,7 +832,8 @@ def report(packets):
             out.append(" ".join(f"![Photo {i}]({p['saved_as']})" for i, p in enumerate(pk["photos"], 1)))   # shown as pictures in report.html
             out.append("")
         out += ["Draft entry:", "", "```js", "  " + json.dumps(pk["draft"], ensure_ascii=False), "```", ""]
-        if pk["to_finish"]: out += ["Still to finish: " + ", ".join(pk["to_finish"]), ""]
+        if pk.get("how"): out += ["How the draft was filled: " + "; ".join(f"{k}: {v}" for k, v in pk["how"].items()), ""]
+        if pk["to_finish"]: out += ["Couldn't fill (no source had it): " + ", ".join(pk["to_finish"]), ""]
         if pk["warn"]: out += ["Check: " + "; ".join(pk["warn"]), ""]
         if pk["missing"]: out += ["Couldn't get: " + "; ".join(pk["missing"]), ""]
     if LOG: out += ["## Run log", "", "```"] + LOG[-200:] + ["```"]
