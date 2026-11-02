@@ -3,7 +3,7 @@
 Type or paste plant names, one per line (common names like "Foamflower" work, or botanical names, or
 "Tiarella cordifolia | Foamflower"), press Start, then "Make zip for Claude" when it's done.
 """
-import os, queue, sys, threading, zipfile, datetime, subprocess
+import os, queue, sys, threading, zipfile, datetime, subprocess, time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -60,7 +60,15 @@ class App:
         ttk.Button(site_row, text="Website folder…", command=self.pick_site).pack(side="right")
         self.show_site()
 
-        ttk.Label(f, text="Progress", style="Small.TLabel").pack(anchor="w", pady=(10, 2))
+        # what it's doing right now: a bar, the current plant and source, and a running clock
+        stat = ttk.Frame(f); stat.pack(fill="x", pady=(12, 0))
+        self.status = tk.StringVar(value="Ready. Type some plants and press Start.")
+        ttk.Label(stat, textvariable=self.status, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        st.configure("Green.Horizontal.TProgressbar", background=GREEN, troughcolor="#e4e8dc")
+        self.bar = ttk.Progressbar(stat, mode="determinate", maximum=100, style="Green.Horizontal.TProgressbar")
+        self.bar.pack(fill="x", pady=(4, 0))
+        self.t0, self.label = None, ""
+        ttk.Label(f, text="Details", style="Small.TLabel").pack(anchor="w", pady=(10, 2))
         self.log = ScrolledText(f, height=12, wrap="word", font=("Consolas", 9), relief="solid", borderwidth=1, state="disabled", background="#FBFAF6")
         self.log.pack(fill="both", expand=True)
 
@@ -102,8 +110,14 @@ class App:
             while True:
                 kind, val = self.q.get_nowait()
                 if kind == "log": self.write(val)
+                elif kind == "prog":
+                    d, tot, self.label = val
+                    self.bar["value"] = 100 * d / max(tot, 1)
                 elif kind == "done": self.finish(val)
         except queue.Empty: pass
+        if self.busy and self.t0:   # keep the clock moving even while one website is slow
+            el = int(time.time() - self.t0)
+            self.status.set(f"Working… {self.label}  ({el // 60}:{el % 60:02d})")
         self.root.after(100, self.pump)
     def refresh_buttons(self):
         has = os.path.isfile(os.path.join(g.INBOX, "report.md"))
@@ -121,6 +135,9 @@ class App:
         self.busy = True; self.go.state(["disabled"]); self.go.config(text="Working…"); self.refresh_buttons()
         self.log.config(state="normal"); self.log.delete("1.0", "end"); self.log.config(state="disabled")
         g.OUT = lambda m: self.q.put(("log", m))
+        g.PROGRESS = lambda d, tot, lab: self.q.put(("prog", (d, tot, lab)))
+        self.t0, self.label = time.time(), "starting"; self.bar["value"] = 0
+        self.root.title("Working… Plant Research (beta)")
         photos, site = self.photos.get(), self.site
         def work():
             try: g.run(items, photos=photos, site=site); self.q.put(("done", None))
@@ -128,8 +145,18 @@ class App:
         threading.Thread(target=work, daemon=True).start()
     def finish(self, err):
         self.busy = False; self.go.state(["!disabled"]); self.go.config(text="Start"); self.refresh_buttons()
-        if err: self.write(f"\nSomething went wrong: {err}"); messagebox.showerror("Plant Research", f"Something went wrong:\n{err}")
-        else: self.write("\nNext: press \"Make zip for Claude\" and attach the zip in your chat.")
+        el = int(time.time() - (self.t0 or time.time())); took = f"{el // 60}:{el % 60:02d}"
+        now = datetime.datetime.now().strftime("%I:%M %p").lstrip("0")
+        if err:
+            self.status.set(f"Stopped at {now}: something went wrong (see Details)."); self.root.title("Stopped - Plant Research (beta)")
+            self.write(f"\nSomething went wrong: {err}"); messagebox.showerror("Plant Research", f"Something went wrong:\n{err}")
+        else:
+            self.bar["value"] = 100
+            self.status.set(f"Finished at {now} (took {took}). Press Open report, or Make zip for Claude.")
+            self.root.title("Done - Plant Research (beta)")
+            self.write("\nNext: press \"Make zip for Claude\" and attach the zip in your chat.")
+            try: self.root.bell(); self.root.deiconify(); self.root.lift()
+            except tk.TclError: pass
 
     def make_zip(self):
         if not os.path.isdir(g.INBOX): return

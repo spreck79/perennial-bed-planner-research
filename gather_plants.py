@@ -70,6 +70,7 @@ CACHE_DAYS = 7
 FRESH = False
 LOG = []
 OUT = None        # the window version sets this to show progress as it happens
+PROGRESS = None   # and this: PROGRESS(steps_done, steps_total, "Plant 1 of 2, Dahlia: NC State")
 
 # ---------------------------------------------------------------- fetching
 
@@ -197,36 +198,44 @@ def labelled(text, labels):
             if v and not any(v.lower().startswith(l.lower() + ":") for l in labels): out[lab] = v
     return out
 
+def mbg_search_urls(q):
+    gen = binomial(q).split()[0]
+    return [MBG + "PlantFinderSearchResults.aspx?basic=" + urllib.parse.quote(q),      # basic search (older address)
+            MBG + "PlantFinderProfileResults.aspx?gen=" + urllib.parse.quote(gen)]      # results for the whole genus (newer address)
+
 def src_mbg(pk):
-    for q in [pk["latin"], binomial(pk["latin"])] + pk["synonyms"]:
-        url = MBG + "PlantFinderSearchResults.aspx?basic=" + urllib.parse.quote(q)
-        t = fetch(url)
-        if not t: continue
-        if "PlantFinderDetails" in url or re.search(r"(?i)Bloom Time\s*:", page_text(t)[0]):   # went straight to a plant page
-            det_url, det = url, t
-        else:
-            _, links = page_text(t); det_url = None
-            want = norm(binomial(q))
-            for href, txt in links:
-                if "PlantFinderDetails.aspx" in href and want and want in norm(txt):
-                    det_url = urllib.parse.urljoin(MBG, href); break
-            if not det_url:
+    tried = []
+    names = [pk["latin"], binomial(pk["latin"])] + pk["synonyms"]
+    for q in dict.fromkeys(names):
+        for url in mbg_search_urls(q):
+            if url in tried: continue
+            tried.append(url)
+            t = fetch(url)
+            if not t: continue
+            if re.search(r"(?i)Bloom Time\s*:", page_text(t)[0]):    # went straight to a plant page
+                det_url, det = url, t
+            else:
+                _, links = page_text(t); det_url = None
+                want = norm(binomial(q))
                 for href, txt in links:
-                    if "PlantFinderDetails.aspx" in href:
-                        det_url = urllib.parse.urljoin(MBG, href); pk["warn"].append(f"Missouri Botanical Garden: no result named '{q}', used the first result ({txt.strip()[:60]}): check it's the right plant"); break
-            if not det_url: continue
-            det = fetch(det_url)
-            if not det: continue
-        text, _ = page_text(det)
-        save_page(pk, "missouri-botanical-garden", det_url, text)
-        f = labelled(text, MBG_LABELS)
-        for k, v in f.items(): pk["facts"]["mbg_" + k.lower().replace(" ", "_")] = {"value": v, "src": "Missouri Botanical Garden Plant Finder", "url": det_url}
-        # the 'Culture' and 'Noteworthy Characteristics' paragraphs are useful for the notes; keep a short cut
-        for head in ("Culture", "Noteworthy Characteristics", "Problems", "Garden Uses"):
-            m = re.search(r"(?s)\n" + head + r"\s*\n(.{40,900}?)(?:\n[A-Z][A-Za-z ]{3,30}\n|\Z)", text)
-            if m: pk["facts"]["mbg_" + head.lower().replace(" ", "_")] = {"value": re.sub(r"\s+", " ", m.group(1)).strip()[:900], "src": "Missouri Botanical Garden Plant Finder", "url": det_url}
-        return
-    pk["missing"].append("Missouri Botanical Garden Plant Finder " + ("couldn't be reached" if unreachable(MBG) else "had no page for it"))
+                    if "plantfinderdetails.aspx" in href.lower() and want and want in norm(txt):
+                        det_url = urllib.parse.urljoin(url, href); break
+                if not det_url and "basic=" in url:
+                    for href, txt in links:
+                        if "plantfinderdetails.aspx" in href.lower():
+                            det_url = urllib.parse.urljoin(url, href); pk["warn"].append(f"Missouri Botanical Garden: no result named '{q}', used the first result ({txt.strip()[:60]}): check it's the right plant"); break
+                if not det_url: continue
+                det = fetch(det_url)
+                if not det: continue
+            text, _ = page_text(det)
+            save_page(pk, "missouri-botanical-garden", det_url, text)
+            for k, v in labelled(text, MBG_LABELS).items(): pk["facts"]["mbg_" + k.lower().replace(" ", "_")] = {"value": v, "src": "Missouri Botanical Garden Plant Finder", "url": det_url}
+            for head in ("Culture", "Noteworthy Characteristics", "Problems", "Garden Uses"):
+                m = re.search(r"(?s)\n" + head + r"\s*\n(.{40,900}?)(?:\n[A-Z][A-Za-z ]{3,30}\n|\Z)", text)
+                if m: pk["facts"]["mbg_" + head.lower().replace(" ", "_")] = {"value": re.sub(r"\s+", " ", m.group(1)).strip()[:900], "src": "Missouri Botanical Garden Plant Finder", "url": det_url}
+            return
+    pk["missing"].append("Missouri Botanical Garden Plant Finder " + ("couldn't be reached" if unreachable(MBG) else "had no page for it")
+                         + " (tried: " + ", ".join(tried) + ")")
 
 NCSU_LABELS = ["Height", "Width", "Light", "Soil Drainage", "Flower Bloom Time", "Flower Color", "Resistance To Challenges",
                "Poison Severity", "Poison Symptoms", "Poison Toxic Principle", "Causes Contact Dermatitis", "Poison Part",
@@ -276,22 +285,36 @@ def snippet(text, i, before=120, after=220):
     return re.sub(r"\s+", " ", text[max(0, i - before): i + after]).strip()
 
 RUTGERS = "https://njaes.rutgers.edu/deer-resistant-plants/"
+RUT_ENTRY = re.compile(r"(?m)^(?P<common>[^\n]+?) - (?P<latin>[^\n]+)\n+Type:\s*\n+(?P<type>[^\n]+)\n+Rating:\s*\n+[^\n]*\n+-\s*(?P<r>[ABCD])\b")
+
+def rutgers_entries(text):
+    """The page lists 'Common - Latin / Type: ... / Rating: ... - A' entries (20 at a time, so search by keyword)."""
+    return [m.groupdict() for m in RUT_ENTRY.finditer(text or "")]
+
 def src_rutgers(pk):
-    t = shared_page("Rutgers deer", RUTGERS)
-    if not t: pk["missing"].append("Rutgers deer list couldn't be read"); return
-    names = [pk["latin"], binomial(pk["latin"])] + pk["synonyms"]
-    i = find_name(t, names)
-    exact = i is not None
-    if i is None:   # Rutgers often lists the genus only ("Tiarella")
-        g = binomial(pk["latin"]).split()[0]
-        m = re.search(r"(?im)^.*\b" + re.escape(g) + r"\b(?!\s+[a-z])", t); i = m.start() if m else None
-    if i is None:
-        pk["facts"]["deer"] = {"value": None, "src": "Rutgers NJAES", "url": RUTGERS, "note": "not on the Rutgers list: leave 'deer' out"}; return
-    sn = snippet(t, i, 40, 260)
-    # the rating is a single capital letter A-D right after the name, in its own cell
-    m = re.search(r"(?:^|\|)\s*([ABCD])\s*(?:\||$)", t[i:i + 400], re.M) or re.search(r"\b([ABCD])\b(?![a-z.])", t[i + 3:i + 300])
-    pk["facts"]["deer"] = {"value": m.group(1) if m else None, "src": "Rutgers NJAES", "url": RUTGERS,
-                           "note": ("" if exact else "matched the genus only; ") + "context: " + sn}
+    want = norm(binomial(pk["latin"])); gen = binomial(pk["latin"]).split()[0]
+    entries, url_used, any_read = [], RUTGERS, False
+    for kw in [gen, pk.get("common") or ""] + [s.split()[0] for s in pk["synonyms"]]:
+        if not kw: continue
+        url = RUTGERS + "?" + urllib.parse.urlencode({"keys": kw})
+        t = fetch(url)
+        if t is None: continue
+        any_read = True; text = page_text(t)[0]
+        found = rutgers_entries(text)
+        if found:
+            entries += found; url_used = url
+            if any(norm(binomial(e["latin"])) == want for e in found): break
+    if not any_read:
+        pk["missing"].append("Rutgers deer list " + ("couldn't be reached" if unreachable(RUTGERS) else "couldn't be read")); return
+    exact = [e for e in entries if norm(binomial(e["latin"])) == want]
+    genus = [e for e in entries if norm(e["latin"]).split()[:1] == [norm(gen)] and re.search(r"\bspp?\.?(\s|$)|\(", e["latin"] + " ")]
+    same_common = [e for e in entries if pk.get("common") and norm(e["common"]) == norm(pk["common"])]   # old names: Dicentra = Lamprocapnos
+    hit = (exact or genus or same_common or [None])[0]
+    if not hit:
+        pk["facts"]["deer"] = {"value": None, "src": "Rutgers NJAES", "url": url_used, "note": "not on the Rutgers list: leave 'deer' out"}; return
+    pk["facts"]["deer"] = {"value": hit["r"], "src": "Rutgers NJAES", "url": url_used,
+                           "note": ("" if exact else "listed for the whole genus; " if genus else "matched by common name, check it's the same plant; ")
+                                   + f"Rutgers entry: {hit['common']} - {hit['latin']} ({hit['type']})"}
 
 ASPCA = {"dogs": "https://www.aspca.org/pet-care/animal-poison-control/dogs-plant-list",
          "cats": "https://www.aspca.org/pet-care/animal-poison-control/cats-plant-list"}
@@ -573,7 +596,14 @@ def run(items, photos=True, fresh=False, site=None):
     os.makedirs(INBOX, exist_ok=True)
     used_ids, used_codes, latins = existing()
     packets = []
+    per = 7 + (1 if photos else 0)          # name lookup + 6 sources (+ photos) per plant
+    total, done = per * len(items), 0
+    def prog(label):
+        if PROGRESS:
+            try: PROGRESS(done, total, label)
+            except Exception: pass
     for n, (latin, common) in enumerate(items, 1):
+        prog(f"Plant {n} of {len(items)}, {common or latin}: finding its botanical name")
         warn0 = []
         one_word_common = False
         if looks_latin(latin) and len(latin.split()) == 1:   # 'Astilbe' (a genus) or 'Foamflower' (a common name)?
@@ -584,6 +614,7 @@ def run(items, photos=True, fresh=False, site=None):
             got = resolve_common(latin)
             if got: common, latin, note = (common or latin.title()), got[0], got[1]; warn0.append(note); say(f"    found {latin}")
             else: say(f"    ! couldn't find a botanical name for '{latin}'; using it as typed")
+        done += 1
         say(f"[{n}/{len(items)}] {common or latin} ({latin})")
         pk = {"latin": latin, "common": common, "id": "", "facts": {}, "synonyms": [], "pages": [], "photos": [], "missing": [], "warn": warn0}
         pk["id"] = make_id(pk, used_ids)
@@ -591,15 +622,17 @@ def run(items, photos=True, fresh=False, site=None):
         for step, fn in [("name check (GBIF)", src_gbif), ("Missouri Botanical Garden", src_mbg), ("NC State", src_ncsu),
                          ("Rutgers deer list", src_rutgers), ("ASPCA", src_aspca), ("Michigan native lists", src_michigan)] + \
                         ([("photos", src_photos)] if photos else []):
-            say("    " + step)
+            say("    " + step); prog(f"Plant {n} of {len(items)}, {common or latin}: {step}")
             try: fn(pk)
             except Exception as e: pk["missing"].append(f"{step} failed ({e.__class__.__name__}: {e})"); say(f"    ! {step} failed: {e}")
+            done += 1
         draft(pk, used_ids, used_codes)
         packets.append(pk)
         with open(os.path.join(INBOX, "packets.json"), "w", encoding="utf-8") as f: json.dump(packets, f, indent=1, ensure_ascii=False)
     md = report(packets)
     with open(os.path.join(INBOX, "report.md"), "w", encoding="utf-8") as f: f.write(md)
     with open(os.path.join(INBOX, "report.html"), "w", encoding="utf-8") as f: f.write(report_html(md))
+    done = total; prog("Finished")
     say("\nDone. Open the report, then make the zip for Claude.")
     return packets
 
