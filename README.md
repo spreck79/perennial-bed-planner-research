@@ -18,7 +18,7 @@ sources, a copy of every page it read, and free-licensed photo choices with thei
 
 ## Download and run (Windows, nothing to install)
 
-1. On this project's GitHub page, open **Releases** (right-hand side) and download **Plant Research.exe** from the newest one.
+1. On this project's GitHub page, open **Releases** (right-hand side) and download **Plant.Research.exe** from the newest one (GitHub swaps the space for a dot; rename it if you like).
 2. Make a folder called `perennial-bed-planner-research` next to your `perennial-bed-planner` website folder and put the
    .exe in it (or put the .exe straight into the folder that holds the website folder). It finds the website by itself and
    checks new plants against the ones already in the planner; if it can't, use the **Website folder…** button.
