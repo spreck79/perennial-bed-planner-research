@@ -578,6 +578,8 @@ def report(packets):
             out.append("Photos:")
             for i, p in enumerate(pk["photos"], 1): out.append(f"{i}. `{p['saved_as']}` {p['file']}, {p['by'] or 'author unknown'}, {p['lic']} ({p['size']}) {p['page']}")
             out.append("")
+            out.append(" ".join(f"![Photo {i}]({p['saved_as']})" for i, p in enumerate(pk["photos"], 1)))   # shown as pictures in report.html
+            out.append("")
         out += ["Draft entry:", "", "```js", "  " + json.dumps(pk["draft"], ensure_ascii=False), "```", ""]
         if pk["to_finish"]: out += ["Still to finish: " + ", ".join(pk["to_finish"]), ""]
         if pk["warn"]: out += ["Check: " + "; ".join(pk["warn"]), ""]
@@ -650,6 +652,11 @@ def report_html(md):
             if not in_table: out.append("<table>"); in_table = True; out.append("<tr>" + "".join(f"<th>{inline(c)}</th>" for c in cells) + "</tr>"); continue
             out.append("<tr>" + "".join(f"<td>{inline(c)}</td>" for c in cells) + "</tr>"); continue
         if in_table: out.append("</table>"); in_table = False
+        imgs = re.findall(r"!\[([^\]]*)\]\(([^)]+)\)", ln)
+        if imgs and re.fullmatch(r"(\s*!\[[^\]]*\]\([^)]+\))+\s*", ln):
+            out.append('<div class="pics">' + "".join(
+                f'<a href="{html.escape(src)}" target="_blank"><img src="{html.escape(src)}" alt="{html.escape(alt)}"><span>{html.escape(alt)}</span></a>'
+                for alt, src in imgs) + "</div>"); continue
         if ln.startswith("## "): out.append(f"<h2>{inline(ln[3:])}</h2>")
         elif ln.startswith("# "): out.append(f"<h1>{inline(ln[2:])}</h1>")
         elif re.match(r"^\d+\. ", ln): out.append(f"<p class=li>{inline(ln)}</p>")
@@ -658,7 +665,9 @@ def report_html(md):
     css = ("body{font:15px/1.45 'Segoe UI',system-ui,sans-serif;color:#2E3A2C;max-width:1000px;margin:24px auto;padding:0 16px;background:#F4F2EA}"
            "h1{color:#3E6B35}h2{color:#3E6B35;border-top:2px solid #d8dccf;padding-top:14px;margin-top:28px}"
            "table{border-collapse:collapse;width:100%;background:#fff;font-size:13px}td,th{border:1px solid #d8dccf;padding:4px 7px;text-align:left;vertical-align:top}"
-           "th{background:#e7ecdf}pre{background:#fff;border:1px solid #d8dccf;padding:10px;overflow:auto;font-size:12px;white-space:pre-wrap}code{font-size:12px}p.li{margin:2px 0 2px 12px}")
+           "th{background:#e7ecdf}pre{background:#fff;border:1px solid #d8dccf;padding:10px;overflow:auto;font-size:12px;white-space:pre-wrap}code{font-size:12px}p.li{margin:2px 0 2px 12px}"
+           ".pics{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0 16px}.pics a{display:block;text-decoration:none;color:#2E3A2C;text-align:center;font-weight:600}"
+           ".pics img{display:block;width:260px;height:195px;object-fit:cover;border-radius:8px;border:1px solid #d8dccf;background:#fff;margin-bottom:4px}")
     return f"<!doctype html><meta charset=utf-8><title>Plant research</title><style>{css}</style>\n" + "\n".join(out)
 
 def main():
