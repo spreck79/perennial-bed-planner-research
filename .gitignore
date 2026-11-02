@@ -1,3 +1,8 @@
 __pycache__/
 inbox/
 new-plants.txt
+plant-research-settings.txt
+plant-research-*.zip
+build/
+dist/
+*.spec

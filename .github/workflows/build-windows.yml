@@ -1,0 +1,49 @@
+# Builds "Plant Research.exe" for Windows on GitHub, so it can be downloaded without installing Python.
+# Runs on every change to the program; the .exe is attached to the newest release (Releases on the project page).
+name: Build Windows program
+
+on:
+  push:
+    branches: [main]
+    paths: ["*.py", ".github/workflows/build-windows.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller==6.11.1
+
+      - name: Check the program starts
+        run: |
+          python -c "import gather_plants, plant_research_app; print('ok')"
+          python gather_plants.py --help
+
+      - name: Build Plant Research.exe
+        run: pyinstaller --noconfirm --onefile --windowed --name "Plant Research" plant_research_app.py
+
+      - name: Keep the .exe with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: Plant-Research-windows
+          path: dist/Plant Research.exe
+
+      - name: Publish it as the newest release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}"
+          gh release create "$TAG" "dist/Plant Research.exe" --target "$GITHUB_SHA" --latest \
+            --title "Plant Research for Windows ($(date -u +%Y-%m-%d))" \
+            --notes "Download **Plant Research.exe**, put it in a folder next to your perennial-bed-planner folder, and double-click it. Windows may warn that it's from an unknown publisher: choose More info, then Run anyway."

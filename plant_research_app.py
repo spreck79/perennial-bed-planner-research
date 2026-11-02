@@ -1,0 +1,151 @@
+"""Plant Research: the window version of gather_plants.py, built into a Windows program (Plant Research.exe).
+
+Type or paste plant names, one per line (common names like "Foamflower" work, or botanical names, or
+"Tiarella cordifolia | Foamflower"), press Start, then "Make zip for Claude" when it's done.
+"""
+import os, queue, sys, threading, zipfile, datetime, subprocess
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from tkinter.scrolledtext import ScrolledText
+
+import gather_plants as g
+
+LIST_FILE = os.path.join(g.HERE, "new-plants.txt")          # the typed list is kept between runs
+SETTINGS = os.path.join(g.HERE, "plant-research-settings.txt")  # remembers the website folder, if picked by hand
+GREEN, INK, BG = "#3E6B35", "#2E3A2C", "#F4F2EA"
+
+def open_path(p):
+    try:
+        if sys.platform.startswith("win"): os.startfile(p)   # noqa: windows only
+        elif sys.platform == "darwin": subprocess.Popen(["open", p])
+        else: subprocess.Popen(["xdg-open", p])
+    except Exception as e:
+        messagebox.showerror("Plant Research", f"Couldn't open {p}\n{e}")
+
+class App:
+    def __init__(self, root):
+        self.root, self.q, self.busy = root, queue.Queue(), False
+        root.title("Plant Research (beta): Perennial Bed Planner")
+        root.geometry("760x640"); root.minsize(560, 480); root.configure(bg=BG)
+        st = ttk.Style(root)
+        try: st.theme_use("clam")
+        except tk.TclError: pass
+        st.configure(".", background=BG, foreground=INK, font=("Segoe UI", 10))
+        st.configure("TButton", padding=(10, 5))
+        st.configure("Go.TButton", background=GREEN, foreground="white", font=("Segoe UI", 10, "bold"))
+        st.map("Go.TButton", background=[("disabled", "#9db394"), ("active", "#4d8243")])
+        st.configure("Head.TLabel", font=("Segoe UI", 15, "bold"), foreground=GREEN)
+        st.configure("Small.TLabel", foreground="#5c6658")
+
+        f = ttk.Frame(root, padding=14); f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Plant Research", style="Head.TLabel").pack(anchor="w")
+        ttk.Label(f, style="Small.TLabel", wraplength=720, justify="left",
+                  text="Type or paste the plants to research, one per line. A common name is fine (Foamflower), or the "
+                       "botanical name (Tiarella cordifolia), or both: Tiarella cordifolia | Foamflower").pack(anchor="w", pady=(2, 8))
+
+        self.text = ScrolledText(f, height=9, wrap="word", font=("Segoe UI", 11), relief="solid", borderwidth=1, undo=True)
+        self.text.pack(fill="both", expand=False)
+        try:
+            with open(LIST_FILE, encoding="utf-8") as fh: self.text.insert("1.0", fh.read().strip() + "\n")
+        except OSError: pass
+
+        row = ttk.Frame(f); row.pack(fill="x", pady=8)
+        self.photos = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row, text="Get photo choices", variable=self.photos).pack(side="left")
+        self.go = ttk.Button(row, text="Start", style="Go.TButton", command=self.start); self.go.pack(side="right")
+
+        site_row = ttk.Frame(f); site_row.pack(fill="x")
+        self.site = self.saved_site()
+        self.site_lbl = ttk.Label(site_row, style="Small.TLabel", wraplength=600, justify="left"); self.site_lbl.pack(side="left", fill="x", expand=True)
+        ttk.Button(site_row, text="Website folder…", command=self.pick_site).pack(side="right")
+        self.show_site()
+
+        ttk.Label(f, text="Progress", style="Small.TLabel").pack(anchor="w", pady=(10, 2))
+        self.log = ScrolledText(f, height=12, wrap="word", font=("Consolas", 9), relief="solid", borderwidth=1, state="disabled", background="#FBFAF6")
+        self.log.pack(fill="both", expand=True)
+
+        bot = ttk.Frame(f); bot.pack(fill="x", pady=(8, 0))
+        self.b_report = ttk.Button(bot, text="Open report", command=lambda: open_path(os.path.join(g.INBOX, "report.html")))
+        self.b_folder = ttk.Button(bot, text="Open inbox folder", command=lambda: open_path(g.INBOX))
+        self.b_zip = ttk.Button(bot, text="Make zip for Claude", command=self.make_zip)
+        for b in (self.b_report, self.b_folder): b.pack(side="left", padx=(0, 6))
+        self.b_zip.pack(side="right")
+        self.refresh_buttons()
+        root.after(100, self.pump)
+
+    # ---- website folder (to check new plants against the ones already in the planner)
+    def saved_site(self):
+        try:
+            with open(SETTINGS, encoding="utf-8") as fh: p = fh.read().strip()
+            return p if os.path.isfile(os.path.join(p, "plants.js")) else None
+        except OSError: return None
+    def show_site(self):
+        found = g.find_site(self.site)
+        self.site_lbl.config(text=f"Website folder: {found}" if found else
+                             "Website folder not found. It's optional, but lets new plants be checked against the ones already in the planner.")
+    def pick_site(self):
+        p = filedialog.askdirectory(title="Pick the perennial-bed-planner website folder (the one with plants.js)")
+        if not p: return
+        if not os.path.isfile(os.path.join(p, "plants.js")):
+            messagebox.showwarning("Plant Research", "That folder doesn't have plants.js in it. Pick the website folder itself."); return
+        self.site = p
+        try:
+            with open(SETTINGS, "w", encoding="utf-8") as fh: fh.write(p)
+        except OSError: pass
+        self.show_site()
+
+    # ---- running
+    def write(self, msg):
+        self.log.config(state="normal"); self.log.insert("end", msg + "\n"); self.log.see("end"); self.log.config(state="disabled")
+    def pump(self):
+        try:
+            while True:
+                kind, val = self.q.get_nowait()
+                if kind == "log": self.write(val)
+                elif kind == "done": self.finish(val)
+        except queue.Empty: pass
+        self.root.after(100, self.pump)
+    def refresh_buttons(self):
+        has = os.path.isfile(os.path.join(g.INBOX, "report.md"))
+        for b in (self.b_report, self.b_zip): b.state(["!disabled"] if has and not self.busy else ["disabled"])
+        self.b_folder.state(["!disabled"] if os.path.isdir(g.INBOX) else ["disabled"])
+    def start(self):
+        if self.busy: return
+        raw = self.text.get("1.0", "end")
+        items = g.parse_lines(raw.splitlines())
+        if not items:
+            messagebox.showinfo("Plant Research", "Type at least one plant name first."); return
+        try:
+            with open(LIST_FILE, "w", encoding="utf-8") as fh: fh.write(raw.strip() + "\n")
+        except OSError: pass
+        self.busy = True; self.go.state(["disabled"]); self.go.config(text="Working…"); self.refresh_buttons()
+        self.log.config(state="normal"); self.log.delete("1.0", "end"); self.log.config(state="disabled")
+        g.OUT = lambda m: self.q.put(("log", m))
+        photos, site = self.photos.get(), self.site
+        def work():
+            try: g.run(items, photos=photos, site=site); self.q.put(("done", None))
+            except Exception as e: self.q.put(("done", e))
+        threading.Thread(target=work, daemon=True).start()
+    def finish(self, err):
+        self.busy = False; self.go.state(["!disabled"]); self.go.config(text="Start"); self.refresh_buttons()
+        if err: self.write(f"\nSomething went wrong: {err}"); messagebox.showerror("Plant Research", f"Something went wrong:\n{err}")
+        else: self.write("\nNext: press \"Make zip for Claude\" and attach the zip in your chat.")
+
+    def make_zip(self):
+        if not os.path.isdir(g.INBOX): return
+        name = os.path.join(g.HERE, f"plant-research-{datetime.date.today().isoformat()}.zip")
+        with zipfile.ZipFile(name, "w", zipfile.ZIP_DEFLATED) as z:
+            for d, dirs, files in os.walk(g.INBOX):
+                dirs[:] = [x for x in dirs if x != ".cache"]           # the page cache stays behind
+                for fn in files:
+                    p = os.path.join(d, fn); z.write(p, os.path.join("inbox", os.path.relpath(p, g.INBOX)))
+        self.write(f"\nMade {name}\nAttach that file in your chat with Claude.")
+        open_path(os.path.dirname(name))
+
+def main():
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()

@@ -43,14 +43,15 @@ and polite to the websites. Use --fresh to ignore the cache.
 """
 import html, html.parser, json, os, re, sys, time, urllib.parse, urllib.request, urllib.error, hashlib, datetime
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# when built as a Windows program, keep the inbox next to the .exe (not in the temporary unpack folder)
+HERE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 INBOX = os.path.join(HERE, "inbox")
 SITE_NAME = "perennial-bed-planner"
 
 def find_site(given=None):
     """The website folder (the one with plants.js), so new plants can be checked against the ones already in it.
     Looks where --site says, then next to this folder, then one level up (if this sits inside the website folder)."""
-    tries = ([given] if given else []) + [os.path.join(HERE, "..", SITE_NAME), os.path.join(HERE, ".."), os.path.join(HERE, "..", "..")]
+    tries = ([given] if given else []) + [os.path.join(HERE, SITE_NAME), os.path.join(HERE, "..", SITE_NAME), os.path.join(HERE, ".."), os.path.join(HERE, "..", "..")]
     for t in tries:
         if t and os.path.isfile(os.path.join(t, "plants.js")): return os.path.abspath(t)
     return None
@@ -60,11 +61,16 @@ UA = "PerennialBedPlanner-research/1.0 (https://github.com/spreck79/perennial-be
 CACHE_DAYS = 7
 FRESH = False
 LOG = []
+OUT = None        # the window version sets this to show progress as it happens
 
 # ---------------------------------------------------------------- fetching
 
 def say(msg):
-    print(msg, flush=True); LOG.append(msg)
+    LOG.append(msg)
+    if OUT: OUT(msg)
+    else:
+        try: print(msg, flush=True)
+        except Exception: pass
 
 _last = [0.0]
 DEAD = set()      # websites that couldn't be reached this run: not tried again
@@ -237,7 +243,7 @@ def shared_page(key, url):
     """A list page used for every plant (deer list, ASPCA lists, nursery lists): fetched once per run."""
     if key not in _shared:
         t = fetch(url); _shared[key] = page_text(t)[0] if t else None
-        if t is None and not unreachable(url): say(f"    ! couldn't read the {key} list ({url})")
+        if t is None and not unreachable(url): say(f"    ! couldn't read {key} ({url})")
     return _shared[key]
 
 def find_name(text, names):
@@ -475,15 +481,43 @@ def existing():
     except OSError: pass
     return ids, codes, latins
 
+LATIN = re.compile(r"^[A-Z][a-z]+(\s+(x|×)\s+[a-z-]+|\s+[a-z][a-z-]+)?(\s+(var\.|subsp\.|ssp\.)\s+[a-z-]+)?(\s+['‘’\"].+)?$")
+def looks_latin(s): return bool(LATIN.match(s.strip())) and len(s.split()) >= 1 and s.split()[0].lower() not in COMMON_FIRST
+COMMON_FIRST = {"wild", "purple", "blue", "white", "red", "yellow", "golden", "black", "great", "common", "swamp", "prairie", "woodland", "false",
+                "hardy", "creeping", "lady", "virginia", "canada", "solomons", "solomon's", "jacobs", "jacob's", "joe", "bleeding", "coral", "lambs", "lamb's"}
+GBIF_BACKBONE = "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"
+
+def resolve_common(name):
+    """'Foamflower' -> ('Tiarella cordifolia', note) using GBIF's plant names; None if nothing sensible comes back."""
+    q = urllib.parse.urlencode({"q": name, "qField": "VERNACULAR", "rank": "SPECIES", "status": "ACCEPTED", "highertaxonKey": "6",
+                                "datasetKey": GBIF_BACKBONE, "limit": "8"})
+    d = get_json("https://api.gbif.org/v1/species/search?" + q)
+    res = (d or {}).get("results") or []
+    want = norm(name)
+    def vern_hit(r):  # prefer a result whose English common names include exactly what was typed
+        return any(norm(v.get("vernacularName")) == want for v in (r.get("vernacularNames") or []) if (v.get("language") in (None, "", "eng", "en")))
+    res.sort(key=lambda r: (not vern_hit(r), r.get("kingdom") != "Plantae"))
+    for r in res:
+        n = r.get("canonicalName") or r.get("species")
+        if n and len(n.split()) >= 2:
+            others = [x.get("canonicalName") for x in res if x is not r and x.get("canonicalName")][:3]
+            return n, f"looked up from the common name '{name}'" + (f" (other matches: {', '.join(others)})" if others else "") + ": check it's the right plant"
+    return None
+
+def parse_lines(lines):
+    """Text lines -> [(latin or common, common)]: 'Tiarella cordifolia | Foamflower', 'Tiarella cordifolia' or just 'Foamflower'."""
+    items = []
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or ln.startswith("#"): continue
+        a, _, b = ln.partition("|")
+        items.append((a.strip(), b.strip()))
+    return items
+
 def read_list(args):
     items = []
     for a in args:
-        lines = open(a, encoding="utf-8").read().splitlines() if os.path.isfile(a) else [a]
-        for ln in lines:
-            ln = ln.strip()
-            if not ln or ln.startswith("#"): continue
-            latin, _, common = ln.partition("|")
-            items.append((latin.strip(), common.strip()))
+        items += parse_lines(open(a, encoding="utf-8").read().splitlines() if os.path.isfile(a) else [a])
     return items
 
 def report(packets):
@@ -511,42 +545,83 @@ def report(packets):
     if LOG: out += ["## Run log", "", "```"] + LOG[-200:] + ["```"]
     return "\n".join(out) + "\n"
 
-def main():
-    global FRESH
-    try: sys.stdout.reconfigure(encoding="utf-8")
-    except Exception: pass
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    flags = {a for a in sys.argv[1:] if a.startswith("--")}
-    if not args or "--help" in flags: print(__doc__); return
-    FRESH = "--fresh" in flags
-    global SITE
-    given = next((sys.argv[i + 1] for i, a in enumerate(sys.argv[:-1]) if a == "--site"), None)
-    if given: args = [a for a in args if a != given]
-    SITE = find_site(given)
+def run(items, photos=True, fresh=False, site=None):
+    """Research every (name, common name) in items; writes inbox/report.md and packets.json. Returns the packets."""
+    global FRESH, SITE
+    FRESH = fresh; del LOG[:]; DEAD.clear(); _shared.clear()
+    SITE = find_site(site)
     if SITE: say(f"Website folder: {SITE}")
     else: say("Note: couldn't find the website folder (perennial-bed-planner), so new plants aren't checked against the ones\n"
-              "already in the planner, and the draft ids and 2-letter codes may clash. Use --site to point at it.")
-    items = read_list(args)
-    if not items: sys.exit("No plants in the list.")
+              "already in the planner, and the draft ids and 2-letter codes may clash.")
     os.makedirs(INBOX, exist_ok=True)
     used_ids, used_codes, latins = existing()
     packets = []
     for n, (latin, common) in enumerate(items, 1):
+        warn0 = []
+        one_word_common = False
+        if looks_latin(latin) and len(latin.split()) == 1:   # 'Astilbe' (a genus) or 'Foamflower' (a common name)?
+            m = get_json("https://api.gbif.org/v1/species/match?verbose=false&kingdom=Plantae&name=" + urllib.parse.quote(latin))
+            one_word_common = bool(m) and not (m.get("matchType") == "EXACT" and m.get("rank") in ("GENUS", "SPECIES"))
+        if not looks_latin(latin) or one_word_common:       # a common name on its own: look up the botanical name
+            say(f"[{n}/{len(items)}] {latin}: looking up the botanical name")
+            got = resolve_common(latin)
+            if got: common, latin, note = (common or latin.title()), got[0], got[1]; warn0.append(note); say(f"    found {latin}")
+            else: say(f"    ! couldn't find a botanical name for '{latin}'; using it as typed")
         say(f"[{n}/{len(items)}] {common or latin} ({latin})")
-        pk = {"latin": latin, "common": common, "id": "", "facts": {}, "synonyms": [], "pages": [], "photos": [], "missing": [], "warn": []}
+        pk = {"latin": latin, "common": common, "id": "", "facts": {}, "synonyms": [], "pages": [], "photos": [], "missing": [], "warn": warn0}
         pk["id"] = make_id(pk, used_ids)
         if norm(binomial(latin)) in latins and "'" not in latin: pk["already"] = latins[norm(binomial(latin))]; say(f"    note: already in the planner as {pk['already']}")
         for step, fn in [("name check (GBIF)", src_gbif), ("Missouri Botanical Garden", src_mbg), ("NC State", src_ncsu),
                          ("Rutgers deer list", src_rutgers), ("ASPCA", src_aspca), ("Michigan native lists", src_michigan)] + \
-                        ([] if "--no-photos" in flags else [("photos", src_photos)]):
+                        ([("photos", src_photos)] if photos else []):
             say("    " + step)
             try: fn(pk)
             except Exception as e: pk["missing"].append(f"{step} failed ({e.__class__.__name__}: {e})"); say(f"    ! {step} failed: {e}")
         draft(pk, used_ids, used_codes)
         packets.append(pk)
         with open(os.path.join(INBOX, "packets.json"), "w", encoding="utf-8") as f: json.dump(packets, f, indent=1, ensure_ascii=False)
-    with open(os.path.join(INBOX, "report.md"), "w", encoding="utf-8") as f: f.write(report(packets))
-    say(f"\nDone. Open inbox/report.md, then zip the inbox folder for Claude.")
+    md = report(packets)
+    with open(os.path.join(INBOX, "report.md"), "w", encoding="utf-8") as f: f.write(md)
+    with open(os.path.join(INBOX, "report.html"), "w", encoding="utf-8") as f: f.write(report_html(md))
+    say("\nDone. Open the report, then make the zip for Claude.")
+    return packets
+
+def report_html(md):
+    """The report as a plain web page, so it opens with a double-click on Windows."""
+    out, in_code, in_table = [], False, False
+    inline = lambda t: re.sub(r"(https?://[^\s)|<]+)", r'<a href="\1">\1</a>', re.sub(r"\*(.+?)\*", r"<i>\1</i>", re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", re.sub(r"`(.+?)`", r"<code>\1</code>", html.escape(t, quote=False)))))
+    for ln in md.splitlines():
+        if ln.startswith("```"):
+            out.append("</pre>" if in_code else "<pre>"); in_code = not in_code; continue
+        if in_code: out.append(html.escape(ln)); continue
+        if ln.startswith("|"):
+            cells = [c.strip() for c in ln.strip("|").split("|")]
+            if set("".join(cells)) <= set("-"): continue
+            if not in_table: out.append("<table>"); in_table = True; out.append("<tr>" + "".join(f"<th>{inline(c)}</th>" for c in cells) + "</tr>"); continue
+            out.append("<tr>" + "".join(f"<td>{inline(c)}</td>" for c in cells) + "</tr>"); continue
+        if in_table: out.append("</table>"); in_table = False
+        if ln.startswith("## "): out.append(f"<h2>{inline(ln[3:])}</h2>")
+        elif ln.startswith("# "): out.append(f"<h1>{inline(ln[2:])}</h1>")
+        elif re.match(r"^\d+\. ", ln): out.append(f"<p class=li>{inline(ln)}</p>")
+        elif ln.strip(): out.append(f"<p>{inline(ln)}</p>")
+    if in_table: out.append("</table>")
+    css = ("body{font:15px/1.45 'Segoe UI',system-ui,sans-serif;color:#2E3A2C;max-width:1000px;margin:24px auto;padding:0 16px;background:#F4F2EA}"
+           "h1{color:#3E6B35}h2{color:#3E6B35;border-top:2px solid #d8dccf;padding-top:14px;margin-top:28px}"
+           "table{border-collapse:collapse;width:100%;background:#fff;font-size:13px}td,th{border:1px solid #d8dccf;padding:4px 7px;text-align:left;vertical-align:top}"
+           "th{background:#e7ecdf}pre{background:#fff;border:1px solid #d8dccf;padding:10px;overflow:auto;font-size:12px;white-space:pre-wrap}code{font-size:12px}p.li{margin:2px 0 2px 12px}")
+    return f"<!doctype html><meta charset=utf-8><title>Plant research</title><style>{css}</style>\n" + "\n".join(out)
+
+def main():
+    try: sys.stdout.reconfigure(encoding="utf-8")
+    except Exception: pass
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    if not args or "--help" in flags: print(__doc__); return
+    given = next((sys.argv[i + 1] for i, a in enumerate(sys.argv[:-1]) if a == "--site"), None)
+    if given: args = [a for a in args if a != given]
+    items = read_list(args)
+    if not items: sys.exit("No plants in the list.")
+    run(items, photos="--no-photos" not in flags, fresh="--fresh" in flags, site=given)
 
 if __name__ == "__main__":
     main()
