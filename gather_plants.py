@@ -233,7 +233,9 @@ NCSU_LABELS = ["Height", "Width", "Light", "Soil Drainage", "Flower Bloom Time",
                "Life Cycle", "Woody Plant Leaf Characteristics", "Country Or Region Of Origin", "Distribution", "Wildlife Value"]
 
 def src_ncsu(pk):
-    for q in [binomial(pk["latin"])] + pk["synonyms"]:
+    tries = [binomial(pk["latin"])] + pk["synonyms"]
+    tries.append(binomial(pk["latin"]).split()[0])     # many garden plants are filed under the genus alone ("dahlia")
+    for q in tries:
         slug = re.sub(r"[^a-z]+", "-", q.lower()).strip("-")
         url = f"https://plants.ces.ncsu.edu/plants/{slug}/"
         t = fetch(url)
@@ -241,6 +243,7 @@ def src_ncsu(pk):
         text, _ = page_text(t)
         if "Height" not in text: continue
         save_page(pk, "nc-state-plant-toolbox", url, text)
+        if len(q.split()) == 1 and len(binomial(pk["latin"]).split()) > 1: pk["warn"].append(f"NC State: used its page for the whole genus ({q})")
         for k, v in labelled(text, NCSU_LABELS).items():
             pk["facts"]["ncsu_" + k.lower().replace(" ", "_")] = {"value": v, "src": "NC State Extension Plant Toolbox", "url": url}
         return
@@ -297,7 +300,11 @@ def src_aspca(pk):
     for animal, url in ASPCA.items():
         t = shared_page("ASPCA " + animal, url)
         if not t: pk["missing"].append(f"ASPCA {animal} list couldn't be read"); continue
-        i = find_name(t, names)
+        i = find_name(t, names); genus_only = False
+        if i is None:   # ASPCA often lists a whole genus: "Scientific Names: Dahlia species" / "Narcissus spp"
+            gen = binomial(pk["latin"]).split()[0]
+            m = re.search(r"(?i)scientific names?:[^|\n]*\b" + re.escape(gen) + r"\s+(?:spp?\b\.?|species\b)", t)
+            if m: i, genus_only = m.start(), True
         if i is None:
             pk["facts"]["aspca_" + animal] = {"value": "not listed", "src": "ASPCA", "url": url}; continue
         # the page has a toxic section, then a non-toxic section: see which heading comes last before the match
@@ -305,7 +312,8 @@ def src_aspca(pk):
         tox = max(before.rfind("plants toxic to"), before.rfind("toxic plants"))
         non = max(before.rfind("non-toxic to"), before.rfind("plants non-toxic"), before.rfind("non-toxic plants"))
         verdict = "non-toxic" if non > tox else "toxic" if tox >= 0 else "listed (check)"
-        pk["facts"]["aspca_" + animal] = {"value": verdict, "src": "ASPCA", "url": url, "note": "context: " + snippet(t, i, 60, 200)}
+        pk["facts"]["aspca_" + animal] = {"value": verdict, "src": "ASPCA", "url": url,
+                                          "note": ("listed for the whole genus; " if genus_only else "") + "context: " + snippet(t, i, 60, 200)}
 
 MI_NATIVE = [   # Michigan sources that list native plants (already used in sources.js)
     ("Black Cap Plants (Onekama, Michigan)", "https://www.blackcapplants.com/species-list"),
@@ -323,7 +331,8 @@ def src_michigan(pk):
         i = find_name(t, names)
         if i is not None:
             sn = snippet(t, i, 80, 160)
-            found.append({"source": title, "url": url, "context": sn, "flagged": "*" in t[i:i + 120].split("\n")[0]})
+            line = t[t.rfind("\n", 0, i) + 1: (t.find("\n", i) + 1 or len(t) + 1) - 1]   # the whole entry line
+            found.append({"source": title, "url": url, "context": sn, "flagged": "*" in line})
     pk["facts"]["michigan_lists"] = {"value": found, "src": "Michigan native nursery lists", "url": "",
                                      "note": "listed by these Michigan sources" if found else
                                              ("not on the Michigan native lists checked: probably a garden favorite (or check Michigan Flora)" if read else "none of the Michigan lists could be read")}
