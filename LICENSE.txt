@@ -1,0 +1,12 @@
+Perennial Bed Planner: plant research (beta)
+Copyright (c) 2026 spreck79
+
+This program and its documentation are licensed under the Creative Commons
+Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0).
+Full license: https://creativecommons.org/licenses/by-nc/4.0/legalcode
+
+You are free to share and adapt this work for non-commercial purposes, as long as
+you give appropriate credit, link to the license, and say if you made changes.
+
+Not covered by this license: the web pages and photos the program downloads keep
+their own terms. Each photo's author and license are recorded in the report.
