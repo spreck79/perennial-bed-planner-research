@@ -28,15 +28,16 @@ and writes a draft plants.js entry. Everything goes into the  "To be added"  fol
     To be added/<id>/photo-1.jpg ...    up to 3 photo choices, with their credits in packets.json
     To be added/<id>/pages/*.txt        the text of each source page, with its link at the top
 
-Then press "Make zip for Claude" in the window (or zip the "To be added" folder) and say which plants to add.
-Claude checks the facts against the saved pages, finishes the entry and runs the rest of the website's
-research/ADDING-A-PLANT.md (photo, companions, sources, final check).
+Every field the website shows is researched, including good neighbors (companion plants named by a source). A plant
+with anything still missing is marked NOT READY in its report, and the website's add_plants.py won't add it.
+Then press "Make zip for Claude" in the window and Claude adds the ready plants with the website's add_plants.py.
 
 Sources (the same ones the planner's research has used):
   GBIF (accepted botanical name, family), Missouri Botanical Garden Plant Finder (height, spread, bloom, sun,
   water), NC State Extension Plant Toolbox (second opinion, poison notes), Rutgers NJAES deer-resistance list,
   ASPCA toxic and non-toxic plant lists for dogs and cats, Michigan native nurseries and Michigan Tech's native
-  table (Michigan native check), Michigan Flora, and Wikimedia Commons (photos).
+  table (Michigan native check), Michigan Flora, Wikimedia Commons (photos), and for good neighbors Wisconsin
+  Horticulture (UW–Madison Extension), Mt. Cuba Center and Perennials.com.
 
 Only needs Python 3 (no extra packages). Pages are cached in inbox/.cache for a week, so running it again is quick
 and polite to the websites. Use --fresh to ignore the cache.
@@ -492,6 +493,172 @@ MONTHS = {m: i + 1 for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "ju
 FERN_FAMS = {"Pteridaceae", "Dryopteridaceae", "Athyriaceae", "Onocleaceae", "Osmundaceae", "Polypodiaceae", "Aspleniaceae",
              "Thelypteridaceae", "Dennstaedtiaceae", "Woodsiaceae", "Blechnaceae", "Cystopteridaceae", "Equisetaceae"}
 
+# ---------------------------------------------------------------- good neighbors (companion plants)
+# A pairing only counts when a source names both plants together: a sentence like "combines well with ..." on a page
+# about one of them. Only partners already on the website are kept. The same sources the website's pairings came from.
+
+COMP_RX = re.compile(r"(?i)\b(?:combin(?:e|es|ed|ing|ation)|pair(?:s|ed|ing)? (?:it |them |well |nicely |beautifully )?with|companions?\b|"
+                     r"goes well with|go well with|works? (?:well|nicely) with|looks? (?:good|great|nice|lovely|best) (?:with|next to|beside)|"
+                     r"planted (?:with|alongside|among|near|next to|beside)|plant (?:it |them )?(?:alongside|among|next to|beside)|plant (?:it|them) (?:with|near)|"
+                     r"grown? (?:with|alongside|among)|contrasts? (?:nicely |well |beautifully )?with|complement(?:s|ed|ing)?\b|underplant\w*|interplant\w*|"
+                     r"mix(?:es|ed)? (?:well |nicely )?with|associated? with|found (?:growing )?with|commonly found with|accompan\w+|partners? (?:well |nicely )?with)")
+NOT_PAIR_RX = re.compile(r"(?i)\b(?:avoid|don't|do not|never|instead of|confused with|mistaken for|resembles?|look-?alike|related to|hybridi[sz]e)\b")
+
+# common words people use for a whole genus on the website, so "hostas", "bee balm" or "coral bells" count
+GENUS_WORDS = {"monarda": ["bee balm", "beebalm", "bergamot", "monarda"], "heuchera": ["coral bells", "coralbells", "heuchera", "alumroot"],
+               "helleborus": ["hellebore", "lenten rose"], "geranium": ["cranesbill", "hardy geranium", "geranium"], "veronica": ["speedwell", "veronica"],
+               "coreopsis": ["tickseed", "coreopsis"], "echinacea": ["coneflower", "echinacea"], "symphyotrichum": ["aster"], "carex": ["sedge"],
+               "asclepias": ["milkweed"], "penstemon": ["beardtongue", "penstemon"], "aquilegia": ["columbine"], "paeonia": ["peony"],
+               "narcissus": ["daffodil", "narcissus"], "tulipa": ["tulip"], "hylotelephium": ["sedum", "stonecrop"], "nepeta": ["catmint", "nepeta"],
+               "achillea": ["yarrow", "achillea"], "epimedium": ["barrenwort", "epimedium"], "pulmonaria": ["lungwort", "pulmonaria"],
+               "eutrochium": ["joe-pye weed", "joe pye weed", "joe-pye"], "rudbeckia": ["black-eyed susan", "rudbeckia"], "digitalis": ["foxglove"],
+               "eryngium": ["sea holly", "rattlesnake master", "eryngium"], "liatris": ["blazing star", "gayfeather", "liatris"], "salvia": ["salvia"],
+               "lavandula": ["lavender"], "iris": ["iris"], "phlox": ["phlox"], "lobelia": ["lobelia"], "anemone": ["anemone"], "allium": ["allium", "ornamental onion"],
+               "hemerocallis": ["daylily"], "hosta": ["hosta"], "astilbe": ["astilbe"], "lamprocapnos": ["bleeding heart", "dicentra"],
+               "polygonatum": ["solomon's seal"], "asarum": ["wild ginger"], "aruncus": ["goatsbeard", "goat's beard"], "baptisia": ["baptisia", "false indigo", "wild indigo"],
+               "brunnera": ["brunnera"], "astrantia": ["astrantia", "masterwort"], "tricyrtis": ["toad lily"], "bergenia": ["bergenia"], "alchemilla": ["lady's mantle"],
+               "ligularia": ["ligularia"], "leucanthemum": ["shasta daisy"], "stachys": ["lamb's ear", "lamb's-ear"], "tradescantia": ["spiderwort"],
+               "helenium": ["sneezeweed", "helenium"], "agastache": ["agastache", "hyssop"], "physostegia": ["obedient plant"], "chelone": ["turtlehead"],
+               "polemonium": ["jacob's ladder"], "tiarella": ["foamflower", "tiarella"], "mertensia": ["bluebells"], "geum": ["prairie smoke"], "zizia": ["golden alexanders"],
+               "pycnanthemum": ["mountain mint"], "actaea": ["black cohosh", "bugbane", "cimicifuga"], "hakonechloa": ["hakone grass", "japanese forest grass"],
+               "dahlia": ["dahlia"], "veronicastrum": ["culver's root"], "fragaria": ["wild strawberry"],
+               "podophyllum": ["mayapple"], "arisaema": ["jack-in-the-pulpit"], "stylophorum": ["celandine poppy", "wood poppy"], "hydrophyllum": ["waterleaf"]}
+SKIP_WORDS = {"goldenrod"}     # a generic sun/prairie goldenrod is not the website's shade goldenrod (same rule as pairs_log.py)
+
+def term_rx(words):
+    """A word or phrase as a pattern: any case, plural allowed, hyphen/space/apostrophe differences ignored."""
+    w = re.escape(words.lower()).replace(r"\ ", r"[\s-]+").replace(r"\-", r"[\s-]+").replace("'", "['’]?")
+    w = re.sub(r"y$", "(?:y|ies)", w) if re.search(r"[^aeiou]y$", words) else w + "(?:s|es)?"
+    return re.compile(r"(?i)(?<![\w-])" + w + r"(?![\w-])")
+
+_TERMS = {}
+def site_terms(sd):
+    """[(pattern, [website plant ids])] for every way a source might name a plant that's on the website."""
+    if id(sd) in _TERMS: return _TERMS[id(sd)]
+    plants = sd["plants"]; out = _TERMS[id(sd)] = []
+    by_genus = {}
+    gk = lambda p: re.sub(r"[^a-z]", "", binomial(p["latin"]).split()[0].lower())
+    for p in plants: by_genus.setdefault(gk(p), []).append(p["id"])
+    for p in plants:
+        if p["name"].lower().endswith("painted fern"): out.append((term_rx("painted fern"), [p["id"]]))
+        base = re.sub(r"\s*['‘’\"].*$", "", p["name"]).strip()          # "Geranium 'Rozanne'" -> "Geranium"
+        cv = re.findall(r"['‘’\"]([^'‘’\"]+)['‘’\"]", p["name"] + " " + p["latin"])   # the cultivar's own name
+        for t in {p["name"], base, binomial(p["latin"])} | set(cv):
+            if t and len(t) > 3 and t.lower() not in SKIP_WORDS and not (t == base and t.lower() in by_genus and len(by_genus[t.lower()]) > 1):
+                out.append((term_rx(t), [p["id"]]))
+    for g, ids in by_genus.items():
+        for w in [g] + GENUS_WORDS.get(g, []):
+            if w not in SKIP_WORDS: out.append((term_rx(w), ids))
+    ferns = [p["id"] for p in plants if p.get("kind") == "fern"]
+    grasses = [p["id"] for p in plants if p.get("kind") == "grass" and not p["latin"].startswith("Carex")]
+    out.append((re.compile(r"(?i)\bferns\b"), ferns))
+    out.append((re.compile(r"(?i)\b(?:ornamental |native |prairie )?grasses\b"), grasses))
+    return out
+
+def plant_rx(pk, sd=None, titles=False):
+    """Patterns for the plant being researched, as a source would name it. titles=True: only names that mean this plant
+    and no other website plant (so an article on 'Woodland Phlox' isn't taken as one about a new phlox)."""
+    gen = binomial(pk["latin"]).split()[0]
+    shared = sd and any(binomial(p["latin"]).split()[0].lower() == gen.lower() and p["id"] != pk["id"] for p in sd["plants"])
+    names = {re.sub(r"\s*['‘’\"].*$", "", pk.get("common") or ""), binomial(pk["latin"])}
+    if not (titles and shared): names |= {gen} | set(GENUS_WORDS.get(gen.lower(), []))
+    return [term_rx(n) for n in names if n and len(n) > 3]
+
+def sentences(text):
+    t = re.sub(r"\s+", " ", text)
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\"'(])", t) if 20 < len(s) < 700]
+
+def pair_sentences(text, sd, about_id, self_rx, need_rx=None, sun=None):
+    """[(sentence, [partner ids])] from one page. need_rx: the sentence must also name this plant (a page about another plant).
+    sun: the plant's light needs; a word for a group ("grasses", "salvias") keeps only the members that share some of it."""
+    terms = site_terms(sd); found = []
+    main = next((k for k in ("full", "part", "shade") if k in (sun or [])), None)      # the light it's mostly grown in
+    fits = lambda i: not main or len(pids) == 1 or main in (sd["by_id"][i].get("sun") or [])
+    for s in sentences(text):
+        if not COMP_RX.search(s) or NOT_PAIR_RX.search(s): continue
+        if need_rx and not any(r.search(s) for r in need_rx): continue
+        rest = s
+        for r in self_rx: rest = r.sub(" ", rest)              # the plant itself doesn't count as its own partner
+        ids = []
+        for rx, pids in terms:
+            if rx.search(rest): ids += [i for i in pids if i != about_id and i not in ids and fits(i)]
+        if ids or need_rx: found.append((s, ids))
+    return found
+
+WISC = "https://hort.extension.wisc.edu"
+WP_SITES = [("wisconsin", WISC, "/articles/", "Wisconsin Horticulture (UW–Madison Extension)"),
+            ("mt-cuba", "https://mtcubacenter.org", "/plants/", "Mt. Cuba Center")]
+
+def wp_search(base, path_part, q):
+    """Pages on a WordPress site that match a search: [(title, url)]."""
+    out = []
+    js = get_json(base + "/wp-json/wp/v2/search?" + urllib.parse.urlencode({"search": q, "per_page": 20}))
+    if isinstance(js, list):
+        out = [(strip_tags(r.get("title") or ""), r.get("url") or "") for r in js if path_part in (r.get("url") or "")]
+    if not out:
+        t = fetch(base + "/?" + urllib.parse.urlencode({"s": q}))
+        if t:
+            for href, txt in page_text(t)[1]:
+                u = urllib.parse.urljoin(base + "/", href)
+                if path_part in u and host(u) == host(base) and txt.strip() and (txt.strip(), u) not in out: out.append((txt.strip(), u))
+    return out
+
+def src_companions(pk):
+    """Good neighbors: partners already on the website that a source names together with this plant."""
+    sd = load_site()
+    if not sd: pk["missing"].append("good neighbors: couldn't read the website's plants to match partners"); return
+    sun = (pk.get("draft") or {}).get("sun") or (sd["by_id"].get(pk["id"]) or {}).get("sun")
+    me = pk["id"]; self_rx = plant_rx(pk); title_rx = plant_rx(pk, sd, titles=True); pairs = []; read = []
+    def keep(about, found, url, src_name):
+        for s, ids in found:
+            if about != me: ids = [me]                         # a page about another plant that names this one
+            pairs.append({"about": about, "partners": ids, "url": url, "source": src_name, "note": s[:400]})
+    # 1. the plant's own pages that were already read (Missouri Botanical Garden, NC State)
+    for pg in pk["pages"]:
+        if pg["source"] in ("missouri-botanical-garden", "nc-state-plant-toolbox"):
+            try: text = open(os.path.join(INBOX, me, "pages", pg["source"] + ".txt"), encoding="utf-8").read()
+            except OSError: continue
+            keep(me, pair_sentences(text, sd, me, self_rx, sun=sun), pg["url"], "Missouri Botanical Garden" if pg["source"].startswith("missouri") else "NC State")
+    # 2. Wisconsin Horticulture and Mt. Cuba: the plant's own article, and articles about website plants that name it
+    gen = binomial(pk["latin"]).split()[0]
+    for key, base, part, name in WP_SITES:
+        seen = set()
+        for q in dict.fromkeys([binomial(pk["latin"]), pk.get("common") or "", gen]):
+            if not q or unreachable(base): continue
+            for title, url in wp_search(base, part, q)[:12]:
+                if url in seen: continue
+                seen.add(url)
+                own = any(r.search(title) for r in title_rx)
+                subject = None if own else next((ids[0] for rx, ids in site_terms(sd) if len(ids) == 1 and rx.search(title)), None)
+                if not own and not subject: continue
+                t = fetch(url)
+                if not t: continue
+                text = page_text(t)[0]; read.append(url)
+                found = pair_sentences(text, sd, me, self_rx, sun=sun) if own else pair_sentences(text, sd, subject, [], need_rx=self_rx)
+                if found:
+                    save_page(pk, f"{key}-{len(read)}", url, text)
+                    keep(me if own else subject, found, url, name)
+            if any(p["source"] == name and p["about"] == me for p in pairs): break
+    # 3. Perennials.com (Walters Gardens' plant site) for the species
+    if len(binomial(pk["latin"]).split()) == 2:
+        url = "https://www.perennials.com/plants/" + re.sub(r"[^a-z]+", "-", binomial(pk["latin"]).lower()).strip("-") + ".html"
+        t = fetch(url)
+        if t:
+            text = page_text(t)[0]; read.append(url)
+            found = pair_sentences(text, sd, me, self_rx, sun=sun)
+            if found: save_page(pk, "perennials-com", url, text); keep(me, found, url, "Perennials.com")
+    # one entry per (page, partners), and every partner listed once in the summary
+    uniq, seen = [], set()
+    for p in pairs:
+        k = (p["about"], tuple(p["partners"]), p["url"])
+        if k not in seen: seen.add(k); uniq.append(p)
+    pk["pairs"] = uniq
+    partners = sorted({i for p in uniq for i in (p["partners"] if p["about"] == me else [p["about"]])})
+    pk["facts"]["good_neighbors"] = {"value": ", ".join(sd["by_id"][i]["name"] for i in partners if i in sd["by_id"]) or None,
+                                     "src": "; ".join(dict.fromkeys(p["source"] for p in uniq)) or "Missouri Botanical Garden, NC State, Wisconsin Horticulture, Mt. Cuba Center, Perennials.com",
+                                     "url": uniq[0]["url"] if uniq else "", "note": f"{len(uniq)} source sentence(s) naming partners on the website; pages read: {len(read) + 2}"}
+    if not uniq: say("    ! no source names a partner that's on the website")
+
 def feet_range(v):
     """'1.00 to 2.00 feet' / '1 ft. 6 in. - 2 ft. 0 in.' / '12-18 inches' -> (lo, hi) in inches"""
     if not v: return None
@@ -783,13 +950,35 @@ def build_package(pk, choice=0):
         except Exception as e:
             pk["warn"].append(f"couldn't make the website photo files ({e})")
     pk["photo_choice"] = choice
+    check_complete(pk)
     lic_url = (photo or {}).get("licUrl") or ""
     if lic_url.startswith("//"): lic_url = "https:" + lic_url
     pkg = {"id": entry["id"], "entry": entry,
            "credit": ({"file": photo["file"], "by": photo["by"], "lic": photo["lic"], "licUrl": lic_url, "page": photo["page"]} if photo else None),
-           "status": status_record(pk), "care": pk.get("care"), "warn": pk["warn"], "made": datetime.date.today().isoformat()}
+           "status": status_record(pk), "care": pk.get("care"), "pairs": pk.get("pairs") or [], "incomplete": pk.get("incomplete") or [],
+           "warn": pk["warn"], "made": datetime.date.today().isoformat()}
     with open(os.path.join(d, "plant.json"), "w", encoding="utf-8") as f: json.dump(pkg, f, indent=1, ensure_ascii=False)
     return pkg
+
+NEED = [("name", "name"), ("kind", "plant type"), ("hLo", "height"), ("hHi", "height"), ("spacing", "spacing"), ("color", "color"),
+        ("hex", "color"), ("light", "light and soil"), ("sun", "sun needs"), ("moisture", "moisture"), ("notes", "description"),
+        ("credit", "photo"), ("zones", "hardiness zones"), ("deer", "deer rating")]
+
+def check_complete(pk):
+    """Everything the website shows for a plant, found? pk['incomplete'] lists what's still missing (empty = ready)."""
+    d, miss = pk.get("draft") or {}, []
+    add = lambda x: miss.append(x) if x not in miss else None
+    for k, label in NEED:
+        if d.get(k) in (None, "", []): add(label)
+    if pk.get("hex_placeholder"): add("color")
+    if d.get("bloom") is None and d.get("kind") not in ("fern", "grass"): add("bloom time")
+    if not status_record(pk): add("Michigan native or garden-center source")
+    if not os.path.exists(os.path.join(INBOX, pk["id"], "website", "photo-full.txt")): add("website photo files")
+    if not pk.get("pairs"): add("good neighbors (no source names a partner that's on the website)")
+    for m in pk.get("missing", []):
+        if m.startswith("ASPCA"): add("toxicity check (ASPCA list couldn't be read)")
+    pk["incomplete"] = miss
+    return miss
 
 def choose_photos(choices):
     """choices: {plant id: photo index}. Rebuilds those plants' website files and the report."""
@@ -843,7 +1032,8 @@ def draft(pk, used_ids, used_codes):
     foliage = kind in ("fern", "grass") or bloom is None
     src_colors = F("mbg_bloom_description") or F("ncsu_flower_color") or ""
     photo1 = os.path.join(INBOX, pk["photos"][0]["saved_as"]) if pk["photos"] else None
-    many = len([c for c in re.split(r"[;,/]", src_colors) if c.strip()]) > 3
+    many = len([c for c in re.split(r"[;,/]", src_colors) if c.strip()]) > 3 or \
+        bool(re.search(r"(?i)\bvarious|many colou?rs|assorted|mixed colou?rs|wide range of colou?rs|all colou?rs|every colou?r|multi-?colou?red", src_colors))
     words_for_hex = (F("ncsu_leaf_color") or "green") if foliage else ("" if many else src_colors)
     hexc, how_hex = word_hex(words_for_hex), "the color named by the sources"
     if hexc and photo1: hexc = refine_with_photo(hexc, photo1)
@@ -867,7 +1057,11 @@ def draft(pk, used_ids, used_codes):
         named = color_name(tuple(int(hexc[i:i + 2], 16) for i in (1, 3, 5)))
         if named not in src_colors.lower() and not (named in ("cream", "white") and re.search(r"(?i)white|cream", src_colors)):
             W.append(f"the photo's main color looks {named}, the sources say '{src_colors}': check the photo or the color")
-    if not hexc: hexc = "#6E9A5B" if foliage else "#C9A9D6"; W.append("couldn't read a color from the photo: hex is a placeholder")
+    if not hexc: hexc = "#6E9A5B" if foliage else "#C9A9D6"; W.append("couldn't read a color from the photo: hex is a placeholder"); pk["hex_placeholder"] = True
+    if not color and hexc and not pk.get("hex_placeholder"):     # the sources gave no usable color words: name the photo's color
+        cn = color_name(tuple(int(hexc[i:i + 2], 16) for i in (1, 3, 5)))
+        color = (f"Many colors ({cn} shown)" if many or re.search(r"(?i)many colou?rs|every colou?r|range of colou?rs", blurb) else cn.capitalize())
+        how_hex += "; color named from the photo"
     # safety
     toxic, why_tox = [], []
     sev = F("ncsu_poison_severity")
@@ -875,6 +1069,15 @@ def draft(pk, used_ids, used_codes):
     tox_pets = [a for a in ("dogs", "cats") if F("aspca_" + a) == "toxic"]
     toxic += tox_pets
     if tox_pets: why_tox.insert(0, "ASPCA lists it as toxic to " + " and ".join(tox_pets))
+    deer = F("deer")
+    if not deer:
+        tol = " ".join(str(F(k) or "") for k in ("mbg_tolerate", "ncsu_resistance_to_challenges"))
+        prob = " ".join(str(F(k) or "") for k in ("mbg_problems", "mbg_culture", "ncsu_description"))
+        if re.search(r"(?i)\bdeer\b", tol) or re.search(r"(?i)\bdeer[- ](?:resistant|tolerant|proof)|\bdeer (?:rarely|seldom|usually don't|avoid|leave)", prob):
+            deer = "B"; src = "Missouri Botanical Garden" if re.search(r"(?i)\bdeer\b", str(F("mbg_tolerate") or "") + str(F("mbg_problems") or "") + str(F("mbg_culture") or "")) else "NC State"
+            pk["facts"]["deer_other"] = {"value": "B", "src": src, "url": "", "note": "Rutgers doesn't rate it; " + src + " lists it as deer resistant, so it's rated B (seldom severely damaged)"}
+        elif re.search(r"(?i)\bdeer\b[^.]{0,50}\b(?:love|favou?rite|browse|feed on|eat|damage|devour)|\b(?:favou?rite|relished)\b[^.]{0,30}\bdeer\b", prob):
+            deer = "C"; pk["facts"]["deer_other"] = {"value": "C", "src": "Missouri Botanical Garden / NC State", "url": "", "note": "Rutgers doesn't rate it; a source says deer eat it, so it's rated C (occasionally severely damaged)"}
     notes = draft_notes(F("mbg_noteworthy_characteristics"), F("ncsu_description"), F("mbg_culture"), F("ncsu_flower_description"))
     filler = kind == "mat" and h and h[1] <= 12
     zones = [zr[0], zr[1]] if zr else None
@@ -885,7 +1088,7 @@ def draft(pk, used_ids, used_codes):
          "spacing": (round((sp[0] + sp[1]) / 2) if sp else None),
          "bloom": bloom, "color": color, "hex": hexc, "txt": label_color(hexc),
          "light": light, "sun": sun, "moisture": moist, "notes": notes,
-         "deer": F("deer"), "toxic": (toxic or None), "toxSrc": ("; ".join(why_tox) if toxic else None),
+         "deer": deer, "toxic": (toxic or None), "toxSrc": ("; ".join(why_tox) if toxic else None),
          "fam": "daisy" if fam == "Asteraceae" else None, "zones": zones, "winter": winter,
          "credit": ({"file": pk["photos"][0]["file"].replace(" ", "_"), "by": pk["photos"][0]["by"], "lic": pk["photos"][0]["lic"]} if pk["photos"] else None)}
     dormant = bool(re.search(r"(?i)\bdorman(t|cy)\b|ephemeral|dies back|disappears? (by|in) (mid|early|late)?\s?summer", blurb))
@@ -897,7 +1100,6 @@ def draft(pk, used_ids, used_codes):
     if not status_record(pk): W.append("not found on the Michigan native lists or the Michigan garden-center list: check it's sold here")
     pk["how"] = {"kind": why_kind, "care": pk["care"] or "standard spring cleanup", "bloom": why_bloom or ("fern/grass" if kind in ("fern", "grass") else "not found"),
                  "hex": how_hex, "notes": "picked from the source descriptions"}
-    pk["to_finish"] = [k for k in ("name", "hLo", "hHi", "spacing", "light", "sun", "moisture", "color", "notes", "credit") if e.get(k) in (None, "", [])]
     used_ids.add(e["id"]); used_codes.add(e["code"])
 
 # ---------------------------------------------------------------- run
@@ -1137,7 +1339,18 @@ def report(packets, rel=None):
                 f"Care group: {pk.get('care') or 'standard spring cleanup'}", ""]
         out += ["Plant entry (ready for the website):", "", "```js", "  " + json.dumps(pk["draft"], ensure_ascii=False), "```", ""]
         if pk.get("how"): out += ["How the draft was filled: " + "; ".join(f"{k}: {v}" for k, v in pk["how"].items()), ""]
-        if pk["to_finish"]: out += ["Couldn't fill (no source had it): " + ", ".join(pk["to_finish"]), ""]
+        sdr = load_site()
+        nm = lambda i: (sdr["by_id"][i]["name"] if sdr and i in sdr["by_id"] else i)
+        if pk.get("pairs"):
+            out += ["Good neighbors (each one named together with this plant by the source):", ""]
+            for pr in pk["pairs"]:
+                who = ", ".join(nm(i) for i in pr["partners"]) if pr["about"] == pk["id"] else nm(pr["about"]) + " (from its own page)"
+                out.append(f"- **{who}**: \"{pr['note']}\" ([{pr['source']}]({pr['url']}))")
+            out.append("")
+        else: out += ["Good neighbors: none found.", ""]
+        inc = pk.get("incomplete")
+        if inc is None: inc = check_complete(pk)
+        out += [("**NOT READY for the website. Still missing: " + ", ".join(inc) + ".**") if inc else "**Ready for the website: every field was found.**", ""]
         if pk["warn"]: out += ["Check: " + "; ".join(pk["warn"]), ""]
         if pk["missing"]: out += ["Couldn't get: " + "; ".join(pk["missing"]), ""]
     if LOG: out += ["## Run log", "", "```"] + LOG[-200:] + ["```"]
@@ -1154,7 +1367,7 @@ def run(items, photos=True, fresh=False, site=None):
     os.makedirs(INBOX, exist_ok=True)
     used_ids, used_codes, latins = existing()
     packets = []
-    per = 7 + (1 if photos else 0)          # name lookup + 6 sources (+ photos) per plant
+    per = 8 + (1 if photos else 0)          # name lookup + 6 sources + good neighbors (+ photos) per plant
     total, done = per * len(items), 0
     def prog(label):
         if PROGRESS:
@@ -1195,6 +1408,10 @@ def run(items, photos=True, fresh=False, site=None):
             except Exception as e: pk["missing"].append(f"{step} failed ({e.__class__.__name__}: {e})"); say(f"    ! {step} failed: {e}")
             done += 1
         draft(pk, used_ids, used_codes)
+        say("    good neighbors"); prog(f"Plant {n} of {len(items)}, {common or latin}: good neighbors")
+        try: src_companions(pk)
+        except Exception as e: pk["missing"].append(f"good neighbors failed ({e.__class__.__name__}: {e})"); say(f"    ! good neighbors failed: {e}")
+        done += 1
         build_package(pk, 0)
         packets.append(pk)
         save_waiting(packets)
@@ -1241,11 +1458,13 @@ def write_reports(packets):
 
 UPDATES = os.path.join(HERE, "Website updates")      # zones / winter care prepared for plants already on the website
 UPDATE_FIELDS = ["zones", "winter"]                    # the fields an update adds; everything else is only compared
+FILL_FIELDS = ["deer"]                                 # added only when the website doesn't have them yet
 COMPARE = ["hLo", "hHi", "spacing", "bloom", "sun", "moisture", "kind", "deer", "toxic"]
 
 def run_update(ids=None, fresh=False, site=None):
     """Research plants already on the website (all, or the ids given) without photos, and prepare only the new
-    fields (zones, winter care) in "Website updates". Also lists where the sources now disagree with the website."""
+    fields (zones, winter care) in "Website updates", plus anything the website is missing (a deer rating, good neighbors).
+    Also lists where the sources now disagree with the website."""
     global FRESH, SITE
     FRESH = fresh; del LOG[:]; DEAD.clear(); _shared.clear()
     SITE = find_site(site); sd = load_site()
@@ -1254,7 +1473,7 @@ def run_update(ids=None, fresh=False, site=None):
     os.makedirs(UPDATES, exist_ok=True)
     steps = [("name check (GBIF)", src_gbif), ("Missouri Botanical Garden", src_mbg), ("NC State", src_ncsu),
              ("Rutgers deer list", src_rutgers), ("ASPCA", src_aspca)]
-    total, done, out = len(plants) * len(steps), 0, []
+    total, done, out = len(plants) * (len(steps) + 1), 0, []
     def prog(label):
         if PROGRESS:
             try: PROGRESS(done, total, label)
@@ -1270,7 +1489,14 @@ def run_update(ids=None, fresh=False, site=None):
         try: draft(pk, set(), set())
         except Exception as e: pk["missing"].append(f"couldn't make the entry ({e})"); pk["draft"] = {}
         d = pk["draft"]
-        upd = {"id": p["id"], "name": p["name"], "latin": p["latin"], "set": {k: d.get(k) for k in UPDATE_FIELDS if d.get(k) is not None},
+        if not (sd.get("comps") or {}).get(p["id"]):           # no good neighbors on the website yet: look for them
+            prog(f"Plant {n} of {len(plants)}, {p['name']}: good neighbors")
+            try: src_companions(pk)
+            except Exception as e: pk["missing"].append(f"good neighbors failed ({e})")
+        done += 1
+        sets = {k: d.get(k) for k in UPDATE_FIELDS if d.get(k) is not None}
+        sets.update({k: d.get(k) for k in FILL_FIELDS if d.get(k) is not None and p.get(k) in (None, "", [])})
+        upd = {"id": p["id"], "name": p["name"], "latin": p["latin"], "set": sets, "pairs": pk.get("pairs") or [],
                "differences": {k: {"website": p.get(k), "sources": d.get(k)} for k in COMPARE if d.get(k) not in (None, []) and d.get(k) != p.get(k)},
                "zones_found": bool(d.get("zones")), "missing": pk["missing"], "warn": pk["warn"], "made": datetime.date.today().isoformat()}
         with open(os.path.join(UPDATES, p["id"] + ".json"), "w", encoding="utf-8") as f: json.dump(upd, f, indent=1, ensure_ascii=False)
@@ -1278,6 +1504,8 @@ def run_update(ids=None, fresh=False, site=None):
         if d.get("winter"): say(f"    winter care: {d['winter']['how']} (zones {zone_name(d['zones'][0])} to {zone_name(d['zones'][1])})")
         elif d.get("zones"): say(f"    hardy here (zones {zone_name(d['zones'][0])} to {zone_name(d['zones'][1])})")
         else: say("    ! no hardiness zones found")
+        if "deer" in sets: say(f"    deer rating found: {sets['deer']} (the website had none)")
+        if upd["pairs"]: say(f"    good neighbors found: {len(upd['pairs'])} source sentence(s)")
     write_update_page(sd)
     done = total; prog("Finished")
     say(f"\nDone: {len(out)} plants checked. Open the updates page, then make the update zip for Claude.")
@@ -1295,11 +1523,15 @@ def write_update_page(sd=None):
     nozone = [u for u in ups if not u.get("zones_found")]
     zn = lambda u: f"{zone_name(u['set']['zones'][0])} to {zone_name(u['set']['zones'][1])}" if u["set"].get("zones") else "not found"
     h = [f"<!doctype html><meta charset=utf-8><title>Website plant updates</title><style>{PAGE_CSS}</style>",
-         f"<h1>Updates for plants on the website</h1><p class=small>{len(ups)} plants checked. An update adds only hardiness zones and winter care; "
-         "nothing else on the website changes. Differences are listed so they can be looked at, not changed automatically.</p>",
+         f"<h1>Updates for plants on the website</h1><p class=small>{len(ups)} plants checked. An update adds hardiness zones and winter care, "
+         "and fills in a deer rating or good neighbors only where the website has none; nothing else on the website changes. Differences are listed so they can be looked at, not changed automatically.</p>",
          f"<h2>Need winter care here ({len(tender)})</h2><ul>" + ("".join(f"<li><b>{esc(u['name'])}</b>: {esc(u['set']['winter']['how'])} (zones {zn(u)})</li>" for u in tender) or "<li>none</li>") + "</ul>",
          f"<h2>Hardy only to 6B: winter mulch ({len(edge)})</h2><ul>" + ("".join(f"<li><b>{esc(u['name'])}</b> (zones {zn(u)})</li>" for u in edge) or "<li>none</li>") + "</ul>",
          f"<h2>No zones found ({len(nozone)})</h2><ul>" + ("".join(f"<li>{esc(u['name'])}</li>" for u in nozone) or "<li>none</li>") + "</ul>",
+         f"<h2>Missing on the website, found now</h2><ul>" + ("".join(f"<li><b>{esc(u['name'])}</b>: " + "; ".join(
+             ([f"deer rating {esc(u['set']['deer'])}"] if "deer" in u["set"] else []) +
+             ([f"good neighbors: " + ", ".join(esc(sd['by_id'][i]['name'] if i in sd['by_id'] else i) for pr in u['pairs'] for i in (pr['partners'] if pr['about'] == u['id'] else [pr['about']])) + " (" + ", ".join(dict.fromkeys(esc(pr['source']) for pr in u['pairs'])) + ")"] if u.get("pairs") else [])) + "</li>"
+             for u in ups if "deer" in u["set"] or u.get("pairs")) or "<li>none</li>") + "</ul>",
          "<h2>Every plant</h2><table><tr><th>Plant</th><th>Zones</th><th>Winter</th><th>Sources differ from the website on</th></tr>"]
     for u in ups:
         diffs = "; ".join(f"{k}: website {esc(v['website'])}, sources {esc(v['sources'])}" for k, v in u["differences"].items()) or "-"

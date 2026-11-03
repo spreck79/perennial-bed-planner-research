@@ -32,9 +32,12 @@ sources, a copy of every page it read, and free-licensed photo choices with thei
    another). Then **Make zip for Claude** makes a zip to attach in your chat.
 6. The zip is ready for the website: for each plant it holds the finished plant entry, the chosen photo in the
    website's sizes (full size and the small preview), the photo credit, the Michigan native or garden-center source,
-   and the care group. On the website side, `research/add_plants.py <zip>` puts it all in place and runs the checks. Claude checks the facts against the saved pages and finishes the job using the website's
-   [research/ADDING-A-PLANT.md](https://github.com/spreck79/perennial-bed-planner/blob/main/research/ADDING-A-PLANT.md)
-   (photo, companions, sources, final check).
+   the care group and its good neighbors (companion plants a source names together with it). On the website side,
+   `research/add_plants.py <zip>` puts it all in place and runs the checks (see the website's
+   [research/ADDING-A-PLANT.md](https://github.com/spreck79/perennial-bed-planner/blob/main/research/ADDING-A-PLANT.md)).
+7. Everything the website shows is researched, so nothing goes on with a gap. If something can't be found (for
+   example no source names a partner plant that's on the website), the plant is marked **NOT READY** with what's
+   missing, in its report and on the To be added tab, and it isn't added to the website.
 
 The window has three tabs:
 
@@ -42,9 +45,10 @@ The window has three tabs:
   botanical name, also after a common name is looked up) isn't researched again; you're told where it is instead.
 - **On the website**: every plant already in the planner, read from the website folder, with a search box. Double-click one
   for its page: photo, every detail, the photo credit, its Michigan source, care and companion plants.
-  **Update all** / **Update selected** re-check those plants (no photos) for hardiness zones and winter care; **Updates page**
-  shows what was found (and where the sources now differ from the website), and **Make update zip for Claude** packs it.
-  Claude adds it with the website's `research/add_plants.py <zip> --update`, which adds only zones and winter care.
+  **Update all** / **Update selected** re-check those plants (no photos) for hardiness zones and winter care, and look for
+  a deer rating or good neighbors where the website has none; **Updates page** shows what was found (and where the
+  sources now differ from the website), and **Make update zip for Claude** packs it. Claude adds it with the website's
+  `research/add_plants.py <zip> --update`, which adds zones and winter care and fills in only what was missing.
 - **To be added**: researched plants waiting to go on the website, each with its own page. Choose photos, remove a plant
   from the list, or make the zip for Claude from here.
 
@@ -54,7 +58,7 @@ Folders beside the .exe (none of them is uploaded):
   it read and the website-ready files (`website\`); `report.html` here is the overview. Plants stay here until removed, so
   several runs can build up a batch.
 - `Website plants\`: the pages for plants already on the website (made fresh each time one is opened).
-- `Website updates\`: hardiness zones and winter care prepared for website plants, with `updates.html`.
+- `Website updates\`: hardiness zones, winter care and missing details prepared for website plants, with `updates.html`.
 - `new-plants.txt`: the list you last typed.
 
 Copies of the pages it reads are kept for a week in `To be added\.cache`, so a second run is quick and easy on the websites

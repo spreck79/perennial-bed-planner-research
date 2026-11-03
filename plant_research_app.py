@@ -189,6 +189,9 @@ class App:
         tv = self.wait_tv; tv.delete(*tv.get_children()); sd = self.site_data(); pk_all = g.waiting()
         for pk in pk_all:
             notes = []
+            inc = pk.get("incomplete")
+            if inc is None: inc = ["research it again (made by an older version)"]
+            if inc: notes.append("NOT READY, missing: " + ", ".join(inc))
             if any("NOT hardy" in w for w in pk.get("warn", [])): notes.append("not hardy in 6B")
             now = g.site_match(sd, "", pk["latin"]) if sd else None
             if now: notes.append(f"now on the website ({now['name']})")
@@ -301,7 +304,10 @@ class App:
             if upd:
                 self.write("\nNext: on the On the website tab, look at the Updates page, then press \"Make update zip for Claude\".")
                 open_path(g.write_update_page(self.site_data()))
-            else: self.write("\nNext: press \"Choose photos…\" to pick the photo for each plant (photo 1 is used unless you change it),\nthen \"Make zip for Claude\" and attach the zip in your chat.")
+            else:
+                nr = [pk for pk in g.waiting() if pk.get("incomplete")]
+                if nr: self.write("\nNot ready (something wasn't found, so it can't go on the website yet):\n" + "\n".join(f"  {pk.get('common') or pk['latin']}: missing " + ", ".join(pk["incomplete"]) for pk in nr))
+                self.write("\nNext: press \"Choose photos…\" to pick the photo for each plant (photo 1 is used unless you change it),\nthen \"Make zip for Claude\" and attach the zip in your chat.")
             try: self.root.bell(); self.root.deiconify(); self.root.lift()
             except tk.TclError: pass
 
@@ -348,6 +354,11 @@ class App:
 
     def make_zip(self):
         if not os.path.isdir(g.INBOX): return
+        notready = [pk for pk in g.waiting() if pk.get("incomplete") is None or pk.get("incomplete")]
+        if notready and not messagebox.askyesno("Plant Research",
+                "These plants aren't ready, so they won't go on the website until the missing parts are found:\n\n"
+                + "\n".join(f"  • {pk.get('common') or pk['latin']}: " + ", ".join(pk.get("incomplete") or ["research it again"]) for pk in notready)
+                + "\n\nMake the zip anyway (the ready plants can still be added)?"): return
         name = os.path.join(g.HERE, f"plant-research-{datetime.date.today().isoformat()}.zip")
         with zipfile.ZipFile(name, "w", zipfile.ZIP_DEFLATED) as z:
             for d, dirs, files in os.walk(g.INBOX):
