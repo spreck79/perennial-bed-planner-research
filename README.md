@@ -54,6 +54,7 @@ Folders beside the .exe (none of them is uploaded):
   it read and the website-ready files (`website\`); `report.html` here is the overview. Plants stay here until removed, so
   several runs can build up a batch.
 - `Website plants\`: the pages for plants already on the website (made fresh each time one is opened).
+- `Website updates\`: hardiness zones and winter care prepared for website plants, with `updates.html`.
 - `new-plants.txt`: the list you last typed.
 
 Copies of the pages it reads are kept for a week in `To be added\.cache`, so a second run is quick and easy on the websites
