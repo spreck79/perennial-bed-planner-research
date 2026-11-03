@@ -37,7 +37,8 @@ Sources (the same ones the planner's research has used):
   water), NC State Extension Plant Toolbox (second opinion, poison notes), Rutgers NJAES deer-resistance list,
   ASPCA toxic and non-toxic plant lists for dogs and cats, Michigan native nurseries and Michigan Tech's native
   table (Michigan native check), Michigan Flora, Wikimedia Commons (photos), and for good neighbors Wisconsin
-  Horticulture (UW–Madison Extension), Mt. Cuba Center and Perennials.com.
+  Horticulture (UW–Madison Extension), Mt. Cuba Center and Perennials.com (and, only when none of those pairs it,
+  Longfield Gardens' companion guides).
 
 Only needs Python 3 (no extra packages). Pages are cached in inbox/.cache for a week, so running it again is quick
 and polite to the websites. Use --fresh to ignore the cache.
@@ -565,17 +566,26 @@ def plant_rx(pk, sd=None, titles=False):
     return [term_rx(n) for n in names if n and len(n) > 3]
 
 def sentences(text):
-    t = re.sub(r"\s+", " ", text)
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\"'(])", t) if 20 < len(s) < 700]
+    out = []
+    for line in text.split("\n"):            # each block of the page (paragraph, heading, list item) on its own
+        t = re.sub(r"\s+", " ", line)
+        out += [x.strip() for x in re.split(r"(?<=[.!?])\s+(?=[A-Z\"'(])", t) if 20 < len(x.strip()) < 700]
+    return out
 
-def pair_sentences(text, sd, about_id, self_rx, need_rx=None, sun=None):
+COMPANION_PAGE_RX = re.compile(r"(?i)companion|what (?:to|can i|can you|should i) (?:plant|grow)|plants? (?:to grow |that grow )?(?:with|next to|alongside)|grow with|pair(?:ing)?s?\b|partners? for")
+WARN_RX = re.compile(r"(?i)not recommended|avoid|keep (?:them|it)?\s*(?:away|apart|separate)|separate (?:area|bed)|heavy feeders|compete|don't|do not")
+
+def pair_sentences(text, sd, about_id, self_rx, need_rx=None, sun=None, whole_page=False):
     """[(sentence, [partner ids])] from one page. need_rx: the sentence must also name this plant (a page about another plant).
+    whole_page: the page is all about this plant's companions, so every website plant it names counts (not warnings).
     sun: the plant's light needs; a word for a group ("grasses", "salvias") keeps only the members that share some of it."""
     terms = site_terms(sd); found = []
     main = next((k for k in ("full", "part", "shade") if k in (sun or [])), None)      # the light it's mostly grown in
     fits = lambda i: not main or len(pids) == 1 or main in (sd["by_id"][i].get("sun") or [])
     for s in sentences(text):
-        if not COMP_RX.search(s) or NOT_PAIR_RX.search(s): continue
+        if whole_page:      # whole sentences of the article only (not menu items or product names)
+            if WARN_RX.search(s) or NOT_PAIR_RX.search(s) or len(s.split()) < 6 or not re.search(r"[.!?][\"')]?$", s): continue
+        elif not COMP_RX.search(s) or NOT_PAIR_RX.search(s): continue
         if need_rx and not any(r.search(s) for r in need_rx): continue
         rest = s
         for r in self_rx: rest = r.sub(" ", rest)              # the plant itself doesn't count as its own partner
@@ -601,6 +611,31 @@ def wp_search(base, path_part, q):
             for href, txt in page_text(t)[1]:
                 u = urllib.parse.urljoin(base + "/", href)
                 if path_part in u and host(u) == host(base) and txt.strip() and (txt.strip(), u) not in out: out.append((txt.strip(), u))
+    return out
+
+COMPANY_SITES = [("longfield", "https://www.longfield-gardens.com", "Longfield Gardens (bulb company)")]
+
+def article_html(markup):
+    """Just the article itself (not the shop's menus, product lists or footer): the biggest <article>, else <main>."""
+    for tag in ("article", "main"):
+        parts = re.findall(r"(?is)<%s\b[^>]*>(.*?)</%s>" % (tag, tag), markup)
+        if parts: return max(parts, key=len)
+    return markup
+
+def shop_search(base, q):
+    """Articles on a Shopify store's blog that match a search: [(title, url)]."""
+    out = []
+    js = get_json(base + "/search/suggest.json?" + urllib.parse.urlencode({"q": q, "resources[type]": "article", "resources[limit]": 10}))
+    try:
+        for a in js["resources"]["results"]["articles"]:
+            out.append((strip_tags(a.get("title") or ""), urllib.parse.urljoin(base + "/", (a.get("url") or "").split("?")[0])))
+    except (TypeError, KeyError): pass
+    if not out:
+        t = fetch(base + "/search?" + urllib.parse.urlencode({"q": q, "type": "article"}))
+        if t:
+            for href, txt in page_text(t)[1]:
+                u = urllib.parse.urljoin(base + "/", href).split("?")[0]
+                if "/blogs/" in u and host(u) == host(base) and txt.strip() and u not in [x[1] for x in out]: out.append((txt.strip(), u))
     return out
 
 def src_companions(pk):
@@ -639,7 +674,23 @@ def src_companions(pk):
                     save_page(pk, f"{key}-{len(read)}", url, text)
                     keep(me if own else subject, found, url, name)
             if any(p["source"] == name and p["about"] == me for p in pairs): break
-    # 3. Perennials.com (Walters Gardens' plant site) for the species
+    # 3. garden companies, only when no university or garden source pairs it (Longfield Gardens writes companion guides
+    #    for bulbs and tender plants such as dahlias): a page whose subject is this plant's companions
+    if not pairs:
+        for key, base, name in COMPANY_SITES:
+            if unreachable(base): continue
+            names = [n for n in dict.fromkeys([re.sub(r"\s*['‘’\"].*$", "", pk.get("common") or ""), gen]) if n]
+            for q in [f"{n} companion plants" for n in names] + [f"what to plant with {n}" for n in names]:
+                for title, url in shop_search(base, q)[:6]:
+                    if url in read or not (any(r.search(title) for r in self_rx) and COMPANION_PAGE_RX.search(title)): continue
+                    t = fetch(url)
+                    if not t: continue
+                    text = page_text(article_html(t))[0]; read.append(url)
+                    found = pair_sentences(text, sd, me, self_rx, sun=sun, whole_page=True)
+                    if found: save_page(pk, f"{key}-{len(read)}", url, text); keep(me, found, url, name)
+                if pairs: break
+            if pairs: break
+    # 4. Perennials.com (Walters Gardens' plant site) for the species
     if len(binomial(pk["latin"]).split()) == 2:
         url = "https://www.perennials.com/plants/" + re.sub(r"[^a-z]+", "-", binomial(pk["latin"]).lower()).strip("-") + ".html"
         t = fetch(url)
