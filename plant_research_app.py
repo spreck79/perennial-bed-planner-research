@@ -76,7 +76,8 @@ class App:
         self.b_report = ttk.Button(bot, text="Open report", command=lambda: open_path(os.path.join(g.INBOX, "report.html")))
         self.b_folder = ttk.Button(bot, text="Open inbox folder", command=lambda: open_path(g.INBOX))
         self.b_zip = ttk.Button(bot, text="Make zip for Claude", command=self.make_zip)
-        for b in (self.b_report, self.b_folder): b.pack(side="left", padx=(0, 6))
+        self.b_photos = ttk.Button(bot, text="Choose photos…", command=self.pick_photos)
+        for b in (self.b_report, self.b_photos, self.b_folder): b.pack(side="left", padx=(0, 6))
         self.b_zip.pack(side="right")
         self.refresh_buttons()
         root.after(100, self.pump)
@@ -121,7 +122,7 @@ class App:
         self.root.after(100, self.pump)
     def refresh_buttons(self):
         has = os.path.isfile(os.path.join(g.INBOX, "report.md"))
-        for b in (self.b_report, self.b_zip): b.state(["!disabled"] if has and not self.busy else ["disabled"])
+        for b in (self.b_report, self.b_zip, self.b_photos): b.state(["!disabled"] if has and not self.busy else ["disabled"])
         self.b_folder.state(["!disabled"] if os.path.isdir(g.INBOX) else ["disabled"])
     def start(self):
         if self.busy: return
@@ -152,11 +153,52 @@ class App:
             self.write(f"\nSomething went wrong: {err}"); messagebox.showerror("Plant Research", f"Something went wrong:\n{err}")
         else:
             self.bar["value"] = 100
-            self.status.set(f"Finished at {now} (took {took}). Press Open report, or Make zip for Claude.")
+            self.status.set(f"Finished at {now} (took {took}). Check the photos (Choose photos…), then Make zip for Claude.")
             self.root.title("Done - Plant Research (beta)")
-            self.write("\nNext: press \"Make zip for Claude\" and attach the zip in your chat.")
+            self.write("\nNext: press \"Choose photos…\" to pick the photo for each plant (photo 1 is used unless you change it),\nthen \"Make zip for Claude\" and attach the zip in your chat.")
             try: self.root.bell(); self.root.deiconify(); self.root.lift()
             except tk.TclError: pass
+
+    # ---- choosing each plant's photo for the website
+    def pick_photos(self):
+        try:
+            import json
+            from PIL import Image, ImageTk
+        except Exception as e:
+            messagebox.showerror("Plant Research", f"Photos can't be shown here ({e})."); return
+        try: packets = json.load(open(os.path.join(g.INBOX, "packets.json"), encoding="utf-8"))
+        except OSError: return
+        win = tk.Toplevel(self.root); win.title("Choose the photo for each plant"); win.configure(bg=BG); win.geometry("900x620")
+        ttk.Label(win, text="Click the photo to use on the website for each plant. Photo 1 is the best match unless you pick another.",
+                  style="Small.TLabel", wraplength=860).pack(anchor="w", padx=14, pady=(12, 6))
+        outer = ttk.Frame(win); outer.pack(fill="both", expand=True, padx=8)
+        cv = tk.Canvas(outer, bg=BG, highlightthickness=0); sb = ttk.Scrollbar(outer, orient="vertical", command=cv.yview)
+        inner = ttk.Frame(cv); inner.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.create_window((0, 0), window=inner, anchor="nw"); cv.configure(yscrollcommand=sb.set)
+        cv.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
+        cv.bind_all("<MouseWheel>", lambda e: cv.yview_scroll(int(-e.delta / 120), "units"))
+        win._imgs, choice = [], {}
+        for pk in packets:
+            if not pk.get("photos"): continue
+            ttk.Label(inner, text=f"{pk['common'] or pk['latin']}  ({pk['latin']})", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(10, 4), padx=6)
+            row = ttk.Frame(inner); row.pack(anchor="w", padx=6)
+            v = tk.IntVar(value=pk.get("photo_choice", 0)); choice[pk["id"]] = v
+            for i, p in enumerate(pk["photos"]):
+                cell = ttk.Frame(row); cell.pack(side="left", padx=6)
+                try:
+                    im = Image.open(os.path.join(g.INBOX, p["saved_as"])); im.thumbnail((260, 195)); ph = ImageTk.PhotoImage(im); win._imgs.append(ph)
+                    tk.Radiobutton(cell, image=ph, variable=v, value=i, indicatoron=False, bd=4, relief="flat", bg=BG,
+                                   selectcolor=GREEN, activebackground=BG, cursor="hand2").pack()
+                except Exception:
+                    ttk.Label(cell, text="(couldn't show this photo)").pack()
+                ttk.Radiobutton(cell, text=f"Photo {i + 1}  ·  {p.get('by') or 'unknown'}"[:44], variable=v, value=i).pack(anchor="w")
+        bar = ttk.Frame(win); bar.pack(fill="x", padx=14, pady=10)
+        def save():
+            g.choose_photos({k: v.get() for k, v in choice.items()})
+            self.write("Photos chosen: " + ", ".join(f"{k} = photo {v.get() + 1}" for k, v in choice.items()))
+            win.destroy()
+        ttk.Button(bar, text="Use these photos", style="Go.TButton", command=save).pack(side="right")
+        ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", padx=8)
 
     def make_zip(self):
         if not os.path.isdir(g.INBOX): return

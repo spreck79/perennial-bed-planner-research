@@ -368,6 +368,17 @@ MI_NATIVE = [   # Michigan sources that list native plants (already used in sour
     ("Michigan Wildflower Farm: dryland list", "https://www.michiganwildflowerfarm.com/seed-species-and-pricing/dryland-species-2/"),
     ("Michigan Wildflower Farm: wetland list", "https://www.michiganwildflowerfarm.com/seed-species-and-pricing/wetland-species/"),
 ]
+BORDINES = ("Bordine's (Michigan garden center): perennials by bloom time, 2026", "https://bordines.com/wp-content/uploads/2026/08/bloom-time.pdf")
+
+def pdf_text(data):
+    try:
+        import io, logging
+        logging.getLogger("pypdf").setLevel(logging.CRITICAL)
+        from pypdf import PdfReader
+        return "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(data)).pages)
+    except Exception:
+        return None
+
 def src_michigan(pk):
     names = [binomial(pk["latin"])] + pk["synonyms"]
     found, read = [], []
@@ -380,6 +391,19 @@ def src_michigan(pk):
             sn = snippet(t, i, 80, 160)
             line = t[t.rfind("\n", 0, i) + 1: (t.find("\n", i) + 1 or len(t) + 1) - 1]   # the whole entry line
             found.append({"source": title, "url": url, "context": sn, "flagged": "*" in line})
+    if not [x for x in found if not x.get("flagged")]:      # not a Michigan native: is it a garden favorite sold here?
+        if "Bordine's" not in _shared:
+            data = fetch(BORDINES[1], binary=True); _shared["Bordine's"] = pdf_text(data) if data else None
+        t = _shared["Bordine's"]; hit = None
+        if t:
+            i = find_name(t, names)
+            if i is None and pk.get("common"): i = find_name(t, [pk["common"]])
+            if i is None:
+                gen = binomial(pk["latin"]).split()[0]
+                m = re.search(r"(?i)\b" + re.escape(gen) + r"\b", t); i = m.start() if m else None
+            if i is not None: hit = snippet(t, i, 40, 120)
+        pk["facts"]["garden_center"] = {"value": "listed" if hit else ("not listed" if t else "couldn't read"), "src": BORDINES[0], "url": BORDINES[1],
+                                        "note": ("context: " + hit) if hit else ""}
     pk["facts"]["michigan_lists"] = {"value": found, "src": "Michigan native nursery lists", "url": "",
                                      "note": "listed by these Michigan sources" if found else
                                              ("not on the Michigan native lists checked: probably a garden favorite (or check Michigan Flora)" if read else "none of the Michigan lists could be read")}
@@ -684,6 +708,70 @@ def kind_from(fam, mbg_type, ncsu_type, blurb):
         return "mat", "described as a groundcover"
     return "clump", "no sign of fern, grass, bulb or groundcover"
 
+def care_group(kind, fam, blurb, dormant, evergreen_hint):
+    """The care.js cutting group: how the planner tells people to cut it back."""
+    b = (blurb or "").lower()
+    if kind == "bulb": return "bulb"
+    if dormant: return "ephemeral"
+    if kind == "grass": return "sedge" if fam == "Cyperaceae" else "grass"
+    if kind == "fern": return "evfern" if evergreen_hint else "fern"
+    if evergreen_hint and kind == "mat": return "tidy"
+    if re.search(r"cut (it |them |the foliage |plants |stems )?back (to the ground )?(in|after) (the )?(fall|autumn|frost)|remove (the )?foliage in (the )?fall|powdery mildew|leaf blight|iris borer", b):
+        return "fall"
+    return None    # the standard spring cleanup
+
+def status_record(pk):
+    """Where the native / garden-favorite check came from, as a sources.js record."""
+    F = lambda k: (pk["facts"].get(k) or {}).get("value")
+    lists = [x for x in (F("michigan_lists") or []) if not x.get("flagged")]
+    if lists: return {"kind": "native", "title": lists[0]["source"], "url": lists[0]["url"]}
+    gc = pk["facts"].get("garden_center") or {}
+    if gc.get("value") == "listed": return {"kind": "garden", "title": BORDINES[0], "url": BORDINES[1]}
+    return None
+
+def build_package(pk, choice=0):
+    """Everything the website needs for this plant, made from the chosen photo, in inbox/<id>/website/."""
+    d = os.path.join(INBOX, pk["id"], "website"); os.makedirs(d, exist_ok=True)
+    entry = dict(pk["draft"]); photo = None
+    if pk["photos"]:
+        choice = max(0, min(choice, len(pk["photos"]) - 1)); photo = pk["photos"][choice]
+        entry["credit"] = {"file": photo["file"].replace(" ", "_"), "by": photo["by"], "lic": photo["lic"]}
+        # the color from the sources stays; nudge it to this photo's shade if it was a named color
+        try:
+            from PIL import Image, ImageOps
+            import base64, io
+            img = ImageOps.exif_transpose(Image.open(os.path.join(INBOX, photo["saved_as"])))
+            w, h = img.size
+            if w / h > 4 / 3: nw = round(h * 4 / 3); img = img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
+            else: nh = round(w * 3 / 4); img = img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
+            def b64(size, q):
+                out = io.BytesIO(); img.convert("RGB").resize(size, Image.LANCZOS).save(out, "JPEG", quality=q, optimize=True, progressive=True)
+                return base64.b64encode(out.getvalue()).decode()
+            open(os.path.join(d, "photo-full.txt"), "w").write(b64((640, 480), 82))     # same sizes as the website's make_photos.py
+            open(os.path.join(d, "photo-preview.txt"), "w").write(b64((240, 180), 60))
+        except Exception as e:
+            pk["warn"].append(f"couldn't make the website photo files ({e})")
+    pk["photo_choice"] = choice
+    lic_url = (photo or {}).get("licUrl") or ""
+    if lic_url.startswith("//"): lic_url = "https:" + lic_url
+    pkg = {"id": entry["id"], "entry": entry,
+           "credit": ({"file": photo["file"], "by": photo["by"], "lic": photo["lic"], "licUrl": lic_url, "page": photo["page"]} if photo else None),
+           "status": status_record(pk), "care": pk.get("care"), "warn": pk["warn"], "made": datetime.date.today().isoformat()}
+    with open(os.path.join(d, "plant.json"), "w", encoding="utf-8") as f: json.dump(pkg, f, indent=1, ensure_ascii=False)
+    return pkg
+
+def choose_photos(choices):
+    """choices: {plant id: photo index}. Rebuilds those plants' website files and the report."""
+    path = os.path.join(INBOX, "packets.json")
+    packets = json.load(open(path, encoding="utf-8"))
+    for pk in packets:
+        if pk["id"] in choices: build_package(pk, choices[pk["id"]])
+    with open(path, "w", encoding="utf-8") as f: json.dump(packets, f, indent=1, ensure_ascii=False)
+    md = report(packets)
+    with open(os.path.join(INBOX, "report.md"), "w", encoding="utf-8") as f: f.write(md)
+    with open(os.path.join(INBOX, "report.html"), "w", encoding="utf-8") as f: f.write(report_html(md))
+    return packets
+
 def draft(pk, used_ids, used_codes):
     F = lambda k: (pk["facts"].get(k) or {}).get("value")
     W = pk["warn"]
@@ -750,9 +838,14 @@ def draft(pk, used_ids, used_codes):
          "deer": F("deer"), "toxic": (toxic or None), "toxSrc": ("; ".join(why_tox) if toxic else None),
          "fam": "daisy" if fam == "Asteraceae" else None,
          "credit": ({"file": pk["photos"][0]["file"].replace(" ", "_"), "by": pk["photos"][0]["by"], "lic": pk["photos"][0]["lic"]} if pk["photos"] else None)}
+    dormant = bool(re.search(r"(?i)\bdorman(t|cy)\b|ephemeral|dies back|disappears? (by|in) (mid|early|late)?\s?summer", blurb))
+    evergreen = bool(re.search(r"(?i)\bevergreen\b|semi-evergreen", blurb + " " + str(F("ncsu_woody_plant_leaf_characteristics") or "")))
+    pk["care"] = care_group(kind, fam, blurb, dormant, evergreen)
+    if dormant: e["dormant"] = True
     pk["draft"] = {k: v for k, v in e.items() if v not in (None, [], "")}
     if "bloom" not in pk["draft"]: pk["draft"]["bloom"] = None
-    pk["how"] = {"kind": why_kind, "bloom": why_bloom or ("fern/grass" if kind in ("fern", "grass") else "not found"),
+    if not status_record(pk): W.append("not found on the Michigan native lists or the Michigan garden-center list: check it's sold here")
+    pk["how"] = {"kind": why_kind, "care": pk["care"] or "standard spring cleanup", "bloom": why_bloom or ("fern/grass" if kind in ("fern", "grass") else "not found"),
                  "hex": how_hex, "notes": "picked from the source descriptions"}
     pk["to_finish"] = [k for k in ("name", "hLo", "hHi", "spacing", "light", "sun", "moisture", "color", "notes", "credit") if e.get(k) in (None, "", [])]
     used_ids.add(e["id"]); used_codes.add(e["code"])
@@ -827,11 +920,15 @@ def report(packets):
         out.append("")
         if pk["photos"]:
             out.append("Photos:")
-            for i, p in enumerate(pk["photos"], 1): out.append(f"{i}. `{p['saved_as']}` {p['file']}, {p['by'] or 'author unknown'}, {p['lic']} ({p['size']}) {p['page']}")
+            ch = pk.get("photo_choice", 0)
+            for i, p in enumerate(pk["photos"], 1): out.append(f"{i}. {'**USED ON THE WEBSITE** ' if i - 1 == ch else ''}`{p['saved_as']}` {p['file']}, {p['by'] or 'author unknown'}, {p['lic']} ({p['size']}) {p['page']}")
             out.append("")
-            out.append(" ".join(f"![Photo {i}]({p['saved_as']})" for i, p in enumerate(pk["photos"], 1)))   # shown as pictures in report.html
+            out.append(" ".join(f"![Photo {i}{' (used)' if i - 1 == ch else ''}]({p['saved_as']})" for i, p in enumerate(pk["photos"], 1)))   # shown as pictures in report.html
             out.append("")
-        out += ["Draft entry:", "", "```js", "  " + json.dumps(pk["draft"], ensure_ascii=False), "```", ""]
+        st = status_record(pk)
+        out += [f"Native / garden favorite: {st['kind']} ({st['title']})" if st else "Native / garden favorite: not confirmed", "",
+                f"Care group: {pk.get('care') or 'standard spring cleanup'}", ""]
+        out += ["Plant entry (ready for the website):", "", "```js", "  " + json.dumps(pk["draft"], ensure_ascii=False), "```", ""]
         if pk.get("how"): out += ["How the draft was filled: " + "; ".join(f"{k}: {v}" for k, v in pk["how"].items()), ""]
         if pk["to_finish"]: out += ["Couldn't fill (no source had it): " + ", ".join(pk["to_finish"]), ""]
         if pk["warn"]: out += ["Check: " + "; ".join(pk["warn"]), ""]
@@ -881,6 +978,7 @@ def run(items, photos=True, fresh=False, site=None):
             except Exception as e: pk["missing"].append(f"{step} failed ({e.__class__.__name__}: {e})"); say(f"    ! {step} failed: {e}")
             done += 1
         draft(pk, used_ids, used_codes)
+        build_package(pk, 0)
         packets.append(pk)
         with open(os.path.join(INBOX, "packets.json"), "w", encoding="utf-8") as f: json.dump(packets, f, indent=1, ensure_ascii=False)
     md = report(packets)

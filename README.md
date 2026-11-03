@@ -27,8 +27,12 @@ sources, a copy of every page it read, and free-licensed photo choices with thei
 4. Type or paste the plants, one per line. A common name is fine (`Foamflower`), or the botanical name
    (`Tiarella cordifolia`), or both (`Tiarella cordifolia | Foamflower`). A plant typed by common name is looked up,
    and the report asks you to confirm it's the right one.
-5. Press **Start**. When it's done, **Open report** shows what was found, and **Make zip for Claude** makes a zip
-   to attach in your chat. Claude checks the facts against the saved pages and finishes the job using the website's
+5. Press **Start** (a progress bar and clock show what it's doing). When it says Finished, **Open report** shows what was
+   found, and **Choose photos…** lets you click the photo to use on the website for each plant (photo 1 unless you pick
+   another). Then **Make zip for Claude** makes a zip to attach in your chat.
+6. The zip is ready for the website: for each plant it holds the finished plant entry, the chosen photo in the
+   website's sizes (full size and the small preview), the photo credit, the Michigan native or garden-center source,
+   and the care group. On the website side, `research/add_plants.py <zip>` puts it all in place and runs the checks. Claude checks the facts against the saved pages and finishes the job using the website's
    [research/ADDING-A-PLANT.md](https://github.com/spreck79/perennial-bed-planner/blob/main/research/ADDING-A-PLANT.md)
    (photo, companions, sources, final check).
 
