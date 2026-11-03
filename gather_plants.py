@@ -53,7 +53,8 @@ except Exception:
 
 # when built as a Windows program, keep the inbox next to the .exe (not in the temporary unpack folder)
 HERE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
-INBOX = os.path.join(HERE, "inbox")
+INBOX = os.path.join(HERE, "To be added")            # researched plants waiting to go on the website
+SITE_PAGES = os.path.join(HERE, "Website plants")     # pages made for plants already on the website
 SITE_NAME = "perennial-bed-planner"
 
 def find_site(given=None):
@@ -69,6 +70,7 @@ UA = "PerennialBedPlanner-research/1.0 (https://github.com/spreck79/perennial-be
 CACHE_DAYS = 7
 FRESH = False
 LOG = []
+ALREADY = []      # plants typed in that turned out to be on the website already: [{"typed", "id", "name", "latin"}]
 OUT = None        # the window version sets this to show progress as it happens
 PROGRESS = None   # and this: PROGRESS(steps_done, steps_total, "Plant 1 of 2, Dahlia: NC State")
 
@@ -767,9 +769,7 @@ def choose_photos(choices):
     for pk in packets:
         if pk["id"] in choices: build_package(pk, choices[pk["id"]])
     with open(path, "w", encoding="utf-8") as f: json.dump(packets, f, indent=1, ensure_ascii=False)
-    md = report(packets)
-    with open(os.path.join(INBOX, "report.md"), "w", encoding="utf-8") as f: f.write(md)
-    with open(os.path.join(INBOX, "report.html"), "w", encoding="utf-8") as f: f.write(report_html(md))
+    write_reports(packets)
     return packets
 
 def draft(pk, used_ids, used_codes):
@@ -852,8 +852,160 @@ def draft(pk, used_ids, used_codes):
 
 # ---------------------------------------------------------------- run
 
+# ---------------------------------------------------------------- the website's own data (read without Node.js)
+
+def _js_value_text(src, start):
+    """From src[start] (a [ or {), return the end index of the matching bracket, skipping strings and comments."""
+    depth, i, n = 0, start, len(src)
+    while i < n:
+        c = src[i]
+        if c in "\"'`":
+            q = c; i += 1
+            while i < n and src[i] != q: i += 2 if src[i] == "\\" else 1
+        elif src.startswith("//", i): i = src.find("\n", i); i = n if i < 0 else i
+        elif src.startswith("/*", i): i = src.find("*/", i) + 1
+        elif c in "[{": depth += 1
+        elif c in "]}":
+            depth -= 1
+            if depth == 0: return i + 1
+        i += 1
+    raise ValueError("unbalanced brackets")
+
+def js_literal(text):
+    """A JavaScript object/array literal (unquoted keys, ' or " strings, comments, trailing commas) -> Python."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'":
+            q = c; j = i + 1; buf = []
+            while j < n and text[j] != q:
+                if text[j] == "\\" and j + 1 < n:
+                    nxt = text[j + 1]; buf.append("'" if nxt == "'" else "\\" + nxt); j += 2
+                else: buf.append('\\"' if text[j] == '"' else text[j]); j += 1
+            out.append('"' + "".join(buf) + '"'); i = j + 1
+        elif text.startswith("//", i): j = text.find("\n", i); i = n if j < 0 else j
+        elif text.startswith("/*", i): i = text.find("*/", i) + 2
+        elif c.isalpha() or c in "_$":
+            m = re.match(r"[A-Za-z_$][\w$]*", text[i:]); w = m.group(0); i += len(w)
+            rest = text[i:].lstrip()
+            out.append(json.dumps(w) if rest.startswith(":") else w)       # bare key -> "key"; true/false/null stay
+        elif c == "." and i + 1 < n and text[i + 1].isdigit() and not (out and out[-1][-1:].isdigit()): out.append("0."); i += 1   # .5 -> 0.5
+        else: out.append(c); i += 1
+    t = re.sub(r",(\s*[\]}])", r"\1", "".join(out))
+    return json.loads(t)
+
+def _grab(src, marker):
+    k = src.find(marker)
+    if k < 0: return None
+    s0 = k + len(marker); s0 += len(src[s0:]) - len(src[s0:].lstrip())
+    return js_literal(src[s0:_js_value_text(src, s0)])
+
+_SITE_CACHE = {}
+def load_site(site=None):
+    """Everything about the plants already on the website, read from its folder. Cached per folder and file times."""
+    site = site or SITE
+    if not site: return None
+    files = ["plants.js", "credits.js", "sources.js", "care.js", "companions.js", "images.js"]
+    stamp = tuple(os.path.getmtime(os.path.join(site, f)) if os.path.exists(os.path.join(site, f)) else 0 for f in files)
+    if _SITE_CACHE.get(site, (None,))[0] == stamp: return _SITE_CACHE[site][1]
+    rd = lambda f: open(os.path.join(site, f), encoding="utf-8").read() if os.path.exists(os.path.join(site, f)) else ""
+    try:
+        plants = _grab(rd("plants.js"), "window.PLANTS =") or []
+    except Exception as e:
+        say(f"! couldn't read plants.js from the website folder ({e})"); return None
+    d = {"site": site, "plants": plants, "by_id": {p["id"]: p for p in plants}}
+    for key, f, marker in [("credits", "credits.js", "window.CREDITS ="), ("status", "sources.js", "window.STATUS_SOURCES ="),
+                           ("cut", "care.js", "const CUT ="), ("comps", "companions.js", "window.COMPANIONS ="),
+                           ("comp_src", "companions.js", "window.COMPANION_SOURCES =")]:
+        try: d[key] = _grab(rd(f), marker) or ({} if key in ("credits", "cut", "comps") else [])
+        except Exception: d[key] = {} if key in ("credits", "cut", "comps") else []
+    d["care_of"] = {pid: grp for grp, ids in (d["cut"] or {}).items() for pid in ids}
+    _SITE_CACHE[site] = (stamp, d)
+    return d
+
+def site_match(site_data, typed, latin=None):
+    """The website plant a typed name (or botanical name) is, if any."""
+    if not site_data: return None
+    t = norm(typed); b = norm(binomial(latin)) if latin else None
+    for p in site_data["plants"]:
+        if t and (t == norm(p["name"]) or t == norm(binomial(p["latin"])) or t == norm(p["latin"])): return p
+        if b and b == norm(binomial(p["latin"])) and "'" not in (latin or ""): return p
+    return None
+
+def site_photo(site, pid):
+    for f, rx in ((os.path.join(site, "photos", pid + ".js"), r'"(data:image/[a-z]+;base64,[^"]+)"'),):
+        try:
+            m = re.search(rx, open(f, encoding="utf-8").read())
+            if m: return m.group(1)
+        except OSError: pass
+    try:
+        m = re.search(r'"' + re.escape(pid) + r'": "(data:image/[a-z]+;base64,[^"]+)"', open(os.path.join(site, "images.js"), encoding="utf-8").read())
+        return m.group(1) if m else None
+    except OSError: return None
+
+CARE_WORDS = {"fall": "Cut back in fall after a few hard frosts", "grass": "Ornamental grass: cut back in early spring", "sedge": "Sedge: comb out or trim in spring",
+              "fern": "Fern: leave fronds over winter, clear them in spring", "evfern": "Evergreen fern: trim tired fronds in spring",
+              "tidy": "Low evergreen: no fall cutting, tidy in spring", "hellebore": "Remove old leaves as the flowers appear", "epimedium": "Cut old leaves in late winter",
+              "lavender": "Trim lightly in spring once new growth shows", "marginal": "Leave stems over winter for protection", "late": "Slow to emerge in spring: mark the spot",
+              "ephemeral": "Dies back by early summer (spring ephemeral)", "bulb": "Spring bulb: let the leaves ripen before removing"}
+
+PAGE_CSS = ("body{font:15px/1.5 'Segoe UI',system-ui,sans-serif;color:#2E3A2C;max-width:980px;margin:22px auto;padding:0 16px;background:#F4F2EA}"
+            "h1{color:#3E6B35;margin:0}h2{color:#3E6B35;border-top:2px solid #d8dccf;padding-top:12px;margin-top:24px}.latin{font-style:italic;color:#5c6658;margin:2px 0 14px}"
+            ".top{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}.top img{width:400px;max-width:100%;border-radius:10px;border:1px solid #d8dccf}"
+            ".chip{display:inline-block;padding:2px 9px;border-radius:999px;font-weight:600;font-size:13px;margin:0 6px 6px 0;background:#e7ecdf}"
+            ".sw{display:inline-block;width:16px;height:16px;border-radius:50%;vertical-align:-3px;border:1px solid #0002;margin-right:6px}"
+            "table{border-collapse:collapse;width:100%;background:#fff;font-size:14px}td,th{border:1px solid #d8dccf;padding:5px 8px;text-align:left;vertical-align:top}"
+            "th{background:#e7ecdf;width:190px}.small{color:#5c6658;font-size:13px}ul{margin:4px 0}a{color:#2f6b9a}"
+            ".pics{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0 16px}.pics a{display:block;text-decoration:none;color:#2E3A2C;text-align:center;font-weight:600}"
+            ".pics img{display:block;width:260px;height:195px;object-fit:cover;border-radius:8px;border:1px solid #d8dccf;background:#fff;margin-bottom:4px}"
+            "pre{background:#fff;border:1px solid #d8dccf;padding:10px;overflow:auto;font-size:12px;white-space:pre-wrap}")
+
+def _months(b):
+    if not b: return "Grown for its leaves (no showy bloom)"
+    nm = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    part = lambda x: ("early " if x % 1 < 0.34 else "mid " if x % 1 < 0.67 else "late ") + nm[min(12, max(1, int(x)))]
+    return f"{part(b[0])} to {part(max(b[0], b[1] - 0.01))}"
+
+def site_page(site_data, pid):
+    """A page about a plant that's already on the website, made from the website folder. Returns the file path."""
+    p = site_data["by_id"][pid]; site = site_data["site"]; esc = lambda v: html.escape(str(v))
+    photo = site_photo(site, pid); cr = site_data["credits"].get(pid) or p.get("credit") or {}
+    srcs = [s for s in site_data["status"] if pid in (s.get("plants") or [])]
+    comps = site_data["comps"].get(pid) or []; csrc = site_data["comp_src"] or []
+    names = {q["id"]: q["name"] for q in site_data["plants"]}
+    rows = [("Code on the plan", p.get("code")), ("Height", f"{p.get('hLo')} to {p.get('hHi')} in"), ("Spacing", f"{p.get('spacing')} in apart"),
+            ("Bloom", _months(p.get("bloom"))), ("Color", f'<span class="sw" style="background:{esc(p.get("hex"))}"></span>{esc(p.get("color"))}'),
+            ("Light", p.get("light")), ("Sun", ", ".join({"full": "full sun", "part": "part shade", "shade": "shade"}[x] for x in p.get("sun") or [])),
+            ("Moisture", p.get("moisture")), ("Kind", p.get("kind")),
+            ("Deer (Rutgers)", {"A": "A, rarely damaged", "B": "B, seldom severely damaged", "C": "C, occasionally severely damaged", "D": "D, frequently severely damaged"}.get(p.get("deer"), "not rated")),
+            ("Toxic", ("to " + ", ".join(p["toxic"]) + (f" ({esc(p.get('toxSrc'))})" if p.get("toxSrc") else "")) if p.get("toxic") else "not known to be toxic"),
+            ("Care", CARE_WORDS.get(site_data["care_of"].get(pid), "Standard spring cleanup"))]
+    chips = [("Michigan native" if p.get("native") else "Garden favorite")] + (["Daisy family"] if p.get("fam") == "daisy" else []) + \
+            (["Dies back early"] if p.get("dormant") else []) + (["Groundcover filler"] if p.get("filler") else [])
+    h = [f"<!doctype html><meta charset=utf-8><title>{esc(p['name'])}</title><style>{PAGE_CSS}</style>",
+         f"<p class=small>On the website · Perennial Bed Planner (made from the website folder)</p><h1>{esc(p['name'])}</h1><p class=latin>{esc(p['latin'])}</p>",
+         "<div class=top>" + (f'<img src="{photo}" alt="">' if photo else "<p>(no photo)</p>") + "<div>" + "".join(f"<span class=chip>{esc(c)}</span>" for c in chips) +
+         f"<p>{esc(p.get('notes', ''))}</p></div></div>", "<h2>Details</h2><table>"]
+    h += [f"<tr><th>{esc(k)}</th><td>{v if k == 'Color' else esc(v)}</td></tr>" for k, v in rows]
+    h.append("</table>")
+    h.append("<h2>Photo credit</h2><p>" + (f"{esc(cr.get('file', ''))}, {esc(cr.get('by') or 'author unknown')}, "
+             + (f'<a href="{esc(cr["licUrl"])}">{esc(cr.get("lic", ""))}</a>' if cr.get("licUrl") else esc(cr.get("lic", ""))) if cr else "none recorded") + "</p>")
+    h.append("<h2>Native / garden favorite check</h2><ul>" + ("".join(f'<li><a href="{esc(s["url"])}">{esc(s["title"])}</a> ({esc(s.get("kind", ""))})</li>' for s in srcs) or "<li>not recorded</li>") + "</ul>")
+    h.append("<h2>Goes well with</h2><ul>" + ("".join(
+        f'<li><b>{esc(names.get(c["id"], c["id"]))}</b>: {esc(c.get("why", ""))}' +
+        "".join(f' <a href="{esc(csrc[k]["url"])}">[source]</a>' for k in c.get("src", []) if k < len(csrc)) + "</li>" for c in comps) or "<li>no researched pairings yet</li>") + "</ul>")
+    os.makedirs(SITE_PAGES, exist_ok=True)
+    path = os.path.join(SITE_PAGES, pid + ".html")
+    with open(path, "w", encoding="utf-8") as f: f.write("\n".join(h))
+    return path
+
 def existing():
     ids, codes, latins = set(), set(), {}
+    sd = load_site()
+    if sd:
+        for p in sd["plants"]:
+            ids.add(p["id"]); codes.add(p["code"]); latins[norm(binomial(p["latin"]))] = p["name"]
+        return ids, codes, latins
     if not SITE: return ids, codes, latins
     try:
         t = open(os.path.join(SITE, "plants.js"), encoding="utf-8").read()
@@ -904,7 +1056,7 @@ def read_list(args):
         items += parse_lines(open(a, encoding="utf-8").read().splitlines() if os.path.isfile(a) else [a])
     return items
 
-def report(packets):
+def report(packets, rel=None):
     out = [f"# New plant research ({datetime.date.today().isoformat()})", "",
            "Made by Plant Research. Every field of the draft entry is filled from the sources and photo 1; Claude checks it against the saved pages and the Check notes, then adds the plant with ADDING-A-PLANT.md.", ""]
     for pk in packets:
@@ -921,9 +1073,10 @@ def report(packets):
         if pk["photos"]:
             out.append("Photos:")
             ch = pk.get("photo_choice", 0)
-            for i, p in enumerate(pk["photos"], 1): out.append(f"{i}. {'**USED ON THE WEBSITE** ' if i - 1 == ch else ''}`{p['saved_as']}` {p['file']}, {p['by'] or 'author unknown'}, {p['lic']} ({p['size']}) {p['page']}")
+            pth = lambda p: (p["saved_as"].split("/", 1)[1] if rel and "/" in p["saved_as"] else p["saved_as"])
+            for i, p in enumerate(pk["photos"], 1): out.append(f"{i}. {'**USED ON THE WEBSITE** ' if i - 1 == ch else ''}`{pth(p)}` {p['file']}, {p['by'] or 'author unknown'}, {p['lic']} ({p['size']}) {p['page']}")
             out.append("")
-            out.append(" ".join(f"![Photo {i}{' (used)' if i - 1 == ch else ''}]({p['saved_as']})" for i, p in enumerate(pk["photos"], 1)))   # shown as pictures in report.html
+            out.append(" ".join(f"![Photo {i}{' (used)' if i - 1 == ch else ''}]({pth(p)})" for i, p in enumerate(pk["photos"], 1)))   # shown as pictures in report.html
             out.append("")
         st = status_record(pk)
         out += [f"Native / garden favorite: {st['kind']} ({st['title']})" if st else "Native / garden favorite: not confirmed", "",
@@ -953,9 +1106,18 @@ def run(items, photos=True, fresh=False, site=None):
         if PROGRESS:
             try: PROGRESS(done, total, label)
             except Exception: pass
+    sd = load_site()
+    del ALREADY[:]
+    def on_site(p, typed):
+        nonlocal done
+        ALREADY.append({"typed": typed, "id": p["id"], "name": p["name"], "latin": p["latin"]})
+        say(f"[{n}/{len(items)}] {typed}: ALREADY ON THE WEBSITE as {p['name']} ({p['latin']}), not researched again")
+        done += per
     for n, (latin, common) in enumerate(items, 1):
         prog(f"Plant {n} of {len(items)}, {common or latin}: finding its botanical name")
         warn0 = []
+        hit = site_match(sd, latin) or (site_match(sd, common) if common else None)
+        if hit: on_site(hit, common or latin); continue
         one_word_common = False
         if looks_latin(latin) and len(latin.split()) == 1:   # 'Astilbe' (a genus) or 'Foamflower' (a common name)?
             m = get_json("https://api.gbif.org/v1/species/match?verbose=false&kingdom=Plantae&name=" + urllib.parse.quote(latin))
@@ -965,11 +1127,12 @@ def run(items, photos=True, fresh=False, site=None):
             got = resolve_common(latin)
             if got: common, latin, note = (common or latin.title()), got[0], got[1]; warn0.append(note); say(f"    found {latin}")
             else: say(f"    ! couldn't find a botanical name for '{latin}'; using it as typed")
+        hit = site_match(sd, "", latin)
+        if hit: on_site(hit, common or latin); continue
         done += 1
         say(f"[{n}/{len(items)}] {common or latin} ({latin})")
         pk = {"latin": latin, "common": common, "id": "", "facts": {}, "synonyms": [], "pages": [], "photos": [], "missing": [], "warn": warn0}
         pk["id"] = make_id(pk, used_ids)
-        if norm(binomial(latin)) in latins and "'" not in latin: pk["already"] = latins[norm(binomial(latin))]; say(f"    note: already in the planner as {pk['already']}")
         for step, fn in [("name check (GBIF)", src_gbif), ("Missouri Botanical Garden", src_mbg), ("NC State", src_ncsu),
                          ("Rutgers deer list", src_rutgers), ("ASPCA", src_aspca), ("Michigan native lists", src_michigan)] + \
                         ([("photos", src_photos)] if photos else []):
@@ -980,18 +1143,53 @@ def run(items, photos=True, fresh=False, site=None):
         draft(pk, used_ids, used_codes)
         build_package(pk, 0)
         packets.append(pk)
-        with open(os.path.join(INBOX, "packets.json"), "w", encoding="utf-8") as f: json.dump(packets, f, indent=1, ensure_ascii=False)
-    md = report(packets)
-    with open(os.path.join(INBOX, "report.md"), "w", encoding="utf-8") as f: f.write(md)
-    with open(os.path.join(INBOX, "report.html"), "w", encoding="utf-8") as f: f.write(report_html(md))
+        save_waiting(packets)
+    write_reports(save_waiting(packets))
     done = total; prog("Finished")
+    if ALREADY: say("\nAlready on the website (not researched again): " + ", ".join(a["name"] for a in ALREADY))
     say("\nDone. Open the report, then make the zip for Claude.")
     return packets
+
+def waiting():
+    """Every researched plant waiting in the "To be added" folder."""
+    try: return json.load(open(os.path.join(INBOX, "packets.json"), encoding="utf-8"))
+    except (OSError, ValueError): return []
+
+def save_waiting(new):
+    """Merge this run's plants into the waiting list (a plant researched again replaces its earlier research)."""
+    keep = [p for p in waiting() if p["id"] not in {q["id"] for q in new} and norm(binomial(p["latin"])) not in {norm(binomial(q["latin"])) for q in new}]
+    allp = keep + list(new)
+    os.makedirs(INBOX, exist_ok=True)
+    with open(os.path.join(INBOX, "packets.json"), "w", encoding="utf-8") as f: json.dump(allp, f, indent=1, ensure_ascii=False)
+    return allp
+
+def write_reports(packets):
+    """One page per waiting plant (To be added/<id>/report.html) and an overview page (To be added/report.html)."""
+    sd = load_site()
+    for pk in packets:
+        md = report([pk], rel=pk["id"])
+        d = os.path.join(INBOX, pk["id"]); os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "report.md"), "w", encoding="utf-8") as f: f.write(md)
+        with open(os.path.join(d, "report.html"), "w", encoding="utf-8") as f: f.write(report_html(md))
+    out = [f"# Plants to be added ({len(packets)})", "", "Each plant has its own page. Plants already on the website have their pages in the Website plants folder.", ""]
+    for pk in packets:
+        now = site_match(sd, "", pk["latin"]) if sd else None
+        flags = ("; NOT hardy in zone 6B" if any("NOT hardy" in w for w in pk.get("warn", [])) else "") + (f"; now on the website as {now['name']}" if now else "")
+        out.append(f"- [{pk['common'] or pk['latin']}]({pk['id']}/report.html) *{pk['latin']}*{flags}")
+    if ALREADY:
+        out += ["", f"## Already on the website ({len(ALREADY)})", ""]
+        for a in ALREADY:
+            if sd and a["id"] in sd["by_id"]: site_page(sd, a["id"])
+            out.append(f"- [{a['name']}](../Website%20plants/{a['id']}.html) *{a['latin']}* (you typed: {a['typed']})")
+    md = "\n".join(out) + "\n"
+    with open(os.path.join(INBOX, "report.md"), "w", encoding="utf-8") as f: f.write(md)
+    with open(os.path.join(INBOX, "report.html"), "w", encoding="utf-8") as f: f.write(report_html(md))
 
 def report_html(md):
     """The report as a plain web page, so it opens with a double-click on Windows."""
     out, in_code, in_table = [], False, False
-    inline = lambda t: re.sub(r"(https?://[^\s)|<]+)", r'<a href="\1">\1</a>', re.sub(r"\*(.+?)\*", r"<i>\1</i>", re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", re.sub(r"`(.+?)`", r"<code>\1</code>", html.escape(t, quote=False)))))
+    inline = lambda t: re.sub(r"\[([^\]]+)\]\(((?!https?:)[^)\s]+)\)", r'<a href="\2">\1</a>', _inline(t))
+    _inline = lambda t: re.sub(r"(?<![(\x22])(https?://[^\s)|<]+)", r'<a href="\1">\1</a>', re.sub(r"\*(.+?)\*", r"<i>\1</i>", re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", re.sub(r"`(.+?)`", r"<code>\1</code>", html.escape(t, quote=False)))))
     for ln in md.splitlines():
         if ln.startswith("```"):
             out.append("</pre>" if in_code else "<pre>"); in_code = not in_code; continue

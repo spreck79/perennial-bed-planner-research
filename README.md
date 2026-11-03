@@ -36,17 +36,25 @@ sources, a copy of every page it read, and free-licensed photo choices with thei
    [research/ADDING-A-PLANT.md](https://github.com/spreck79/perennial-bed-planner/blob/main/research/ADDING-A-PLANT.md)
    (photo, companions, sources, final check).
 
-The list you type is kept for next time (`new-plants.txt` beside the .exe), and the results go in an `inbox` folder beside it:
+The window has three tabs:
 
-- `report.html` (and `report.md`): each plant's facts with their sources, a complete draft plants.js entry (size, bloom, color from the
-  sources and photo, light, moisture, deer, toxicity, notes, code, photo credit), and a short list of things to double-check
-  (for example a plant that isn't hardy in zone 6B)
-- `<id>\photo-1.jpg` to `photo-3.jpg`: the photo choices (credits are in the report)
-- `<id>\pages\`: the text of every page it read, with the link at the top
+- **Research new plants**: type the plants and press Start. Any plant already on the website (matched by its common or
+  botanical name, also after a common name is looked up) isn't researched again; you're told where it is instead.
+- **On the website**: every plant already in the planner, read from the website folder, with a search box. Double-click one
+  for its page: photo, every detail, the photo credit, its Michigan source, care and companion plants.
+- **To be added**: researched plants waiting to go on the website, each with its own page. Choose photos, remove a plant
+  from the list, or make the zip for Claude from here.
 
-Copies of the pages are kept for a week in `inbox\.cache`, so a second run is quick and easy on the websites
-(they're left out of the zip). If a website can't be reached or has changed its layout, the report says what's missing
-and that part is researched by hand. Nothing is uploaded; delete the inbox when you're done.
+Folders beside the .exe (none of them is uploaded):
+
+- `To be added\`: one folder per researched plant with its page (`report.html`), photo choices, the text of every source page
+  it read and the website-ready files (`website\`); `report.html` here is the overview. Plants stay here until removed, so
+  several runs can build up a batch.
+- `Website plants\`: the pages for plants already on the website (made fresh each time one is opened).
+- `new-plants.txt`: the list you last typed.
+
+Copies of the pages it reads are kept for a week in `To be added\.cache`, so a second run is quick and easy on the websites
+(they're left out of the zip). If a website can't be reached or has changed its layout, the page says what's missing.
 
 ## How the .exe is made
 

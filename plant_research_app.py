@@ -26,7 +26,7 @@ class App:
     def __init__(self, root):
         self.root, self.q, self.busy = root, queue.Queue(), False
         root.title("Plant Research (beta): Perennial Bed Planner")
-        root.geometry("760x640"); root.minsize(560, 480); root.configure(bg=BG)
+        root.geometry("820x700"); root.minsize(600, 520); root.configure(bg=BG)
         st = ttk.Style(root)
         try: st.theme_use("clam")
         except tk.TclError: pass
@@ -36,10 +36,17 @@ class App:
         st.map("Go.TButton", background=[("disabled", "#9db394"), ("active", "#4d8243")])
         st.configure("Head.TLabel", font=("Segoe UI", 15, "bold"), foreground=GREEN)
         st.configure("Small.TLabel", foreground="#5c6658")
+        st.configure("TNotebook", background=BG); st.configure("TNotebook.Tab", padding=(14, 6), font=("Segoe UI", 10, "bold"))
+        st.map("TNotebook.Tab", background=[("selected", "#ffffff"), ("!selected", "#e4e8dc")])
+        st.configure("Treeview", rowheight=24, font=("Segoe UI", 10)); st.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
 
-        f = ttk.Frame(root, padding=14); f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Plant Research", style="Head.TLabel").pack(anchor="w")
-        ttk.Label(f, style="Small.TLabel", wraplength=720, justify="left",
+        outer = ttk.Frame(root, padding=(14, 10, 14, 14)); outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Plant Research", style="Head.TLabel").pack(anchor="w")
+        self.nb = ttk.Notebook(outer); self.nb.pack(fill="both", expand=True, pady=(6, 0))
+        f = ttk.Frame(self.nb, padding=12); self.nb.add(f, text="Research new plants")
+        self.tab_site = ttk.Frame(self.nb, padding=12); self.nb.add(self.tab_site, text="On the website")
+        self.tab_wait = ttk.Frame(self.nb, padding=12); self.nb.add(self.tab_wait, text="To be added")
+        ttk.Label(f, style="Small.TLabel", wraplength=740, justify="left",
                   text="Type or paste the plants to research, one per line. A common name is fine (Foamflower), or the "
                        "botanical name (Tiarella cordifolia), or both: Tiarella cordifolia | Foamflower").pack(anchor="w", pady=(2, 8))
 
@@ -73,14 +80,95 @@ class App:
         self.log.pack(fill="both", expand=True)
 
         bot = ttk.Frame(f); bot.pack(fill="x", pady=(8, 0))
-        self.b_report = ttk.Button(bot, text="Open report", command=lambda: open_path(os.path.join(g.INBOX, "report.html")))
-        self.b_folder = ttk.Button(bot, text="Open inbox folder", command=lambda: open_path(g.INBOX))
+        self.b_report = ttk.Button(bot, text="Open overview", command=lambda: open_path(os.path.join(g.INBOX, "report.html")))
+        self.b_folder = ttk.Button(bot, text="Open To be added folder", command=lambda: open_path(g.INBOX))
         self.b_zip = ttk.Button(bot, text="Make zip for Claude", command=self.make_zip)
         self.b_photos = ttk.Button(bot, text="Choose photos…", command=self.pick_photos)
         for b in (self.b_report, self.b_photos, self.b_folder): b.pack(side="left", padx=(0, 6))
         self.b_zip.pack(side="right")
         self.refresh_buttons()
+        self.build_site_tab(); self.build_wait_tab()
         root.after(100, self.pump)
+
+    # ---- tab: plants already on the website
+    def site_data(self):
+        g.SITE = g.find_site(self.site)
+        return g.load_site(g.SITE) if g.SITE else None
+    def build_site_tab(self):
+        t = self.tab_site
+        top = ttk.Frame(t); top.pack(fill="x")
+        ttk.Label(top, text="Search").pack(side="left")
+        self.site_q = tk.StringVar(); e = ttk.Entry(top, textvariable=self.site_q, width=32); e.pack(side="left", padx=8)
+        self.site_q.trace_add("write", lambda *a: self.fill_site())
+        ttk.Button(top, text="Refresh", command=self.fill_site).pack(side="right")
+        self.site_info = ttk.Label(t, style="Small.TLabel", wraplength=740, justify="left"); self.site_info.pack(anchor="w", pady=(8, 6))
+        cols = ("name", "latin", "code", "type")
+        fr = ttk.Frame(t); fr.pack(fill="both", expand=True)
+        self.site_tv = ttk.Treeview(fr, columns=cols, show="headings", selectmode="browse")
+        for c, w, lab in zip(cols, (240, 260, 70, 140), ("Plant", "Botanical name", "Code", "Michigan")): self.site_tv.heading(c, text=lab); self.site_tv.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(fr, orient="vertical", command=self.site_tv.yview); self.site_tv.configure(yscrollcommand=sb.set)
+        self.site_tv.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
+        self.site_tv.bind("<Double-1>", lambda e: self.open_site_page())
+        b = ttk.Frame(t); b.pack(fill="x", pady=(8, 0))
+        ttk.Button(b, text="Open its page", style="Go.TButton", command=self.open_site_page).pack(side="left")
+        ttk.Label(b, text="Double-click a plant to open its page (made from the website folder).", style="Small.TLabel").pack(side="left", padx=10)
+        self.fill_site()
+    def fill_site(self):
+        sd = self.site_data(); tv = self.site_tv; tv.delete(*tv.get_children())
+        if not sd:
+            self.site_info.config(text="The website folder wasn't found. Use \"Website folder…\" on the first tab."); self.nb.tab(self.tab_site, text="On the website"); return
+        q = g.norm(self.site_q.get()); n = 0
+        for p in sorted(sd["plants"], key=lambda p: p["name"].lower()):
+            if q and q not in g.norm(p["name"] + " " + p["latin"] + " " + p.get("code", "")): continue
+            tv.insert("", "end", iid=p["id"], values=(p["name"], p["latin"], p.get("code", ""), "native" if p.get("native") else "garden favorite")); n += 1
+        self.site_info.config(text=f"{len(sd['plants'])} plants are on the website" + (f" ({n} match the search)" if q else "") + f". Folder: {sd['site']}")
+        self.nb.tab(self.tab_site, text=f"On the website ({len(sd['plants'])})")
+    def open_site_page(self, pid=None):
+        pid = pid or (self.site_tv.selection() or [None])[0]
+        if not pid: return
+        sd = self.site_data()
+        if sd and pid in sd["by_id"]: open_path(g.site_page(sd, pid))
+
+    # ---- tab: researched plants waiting to go on the website
+    def build_wait_tab(self):
+        t = self.tab_wait
+        self.wait_info = ttk.Label(t, style="Small.TLabel", wraplength=740, justify="left"); self.wait_info.pack(anchor="w", pady=(0, 6))
+        cols = ("name", "latin", "photo", "notes")
+        fr = ttk.Frame(t); fr.pack(fill="both", expand=True)
+        self.wait_tv = ttk.Treeview(fr, columns=cols, show="headings", selectmode="browse")
+        for c, w, lab in zip(cols, (200, 210, 70, 260), ("Plant", "Botanical name", "Photo", "Check")): self.wait_tv.heading(c, text=lab); self.wait_tv.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(fr, orient="vertical", command=self.wait_tv.yview); self.wait_tv.configure(yscrollcommand=sb.set)
+        self.wait_tv.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
+        self.wait_tv.bind("<Double-1>", lambda e: self.open_wait_page())
+        b = ttk.Frame(t); b.pack(fill="x", pady=(8, 0))
+        ttk.Button(b, text="Open its page", style="Go.TButton", command=self.open_wait_page).pack(side="left")
+        ttk.Button(b, text="Choose photos…", command=self.pick_photos).pack(side="left", padx=6)
+        ttk.Button(b, text="Remove from list", command=self.remove_waiting).pack(side="left")
+        ttk.Button(b, text="Make zip for Claude", command=self.make_zip).pack(side="right")
+        self.fill_wait()
+    def fill_wait(self):
+        tv = self.wait_tv; tv.delete(*tv.get_children()); sd = self.site_data(); pk_all = g.waiting()
+        for pk in pk_all:
+            notes = []
+            if any("NOT hardy" in w for w in pk.get("warn", [])): notes.append("not hardy in 6B")
+            now = g.site_match(sd, "", pk["latin"]) if sd else None
+            if now: notes.append(f"now on the website ({now['name']})")
+            if not pk.get("photos"): notes.append("no photo")
+            tv.insert("", "end", iid=pk["id"], values=(pk.get("common") or pk["latin"], pk["latin"], f"#{pk.get('photo_choice', 0) + 1}" if pk.get("photos") else "-", "; ".join(notes) or "ready"))
+        self.wait_info.config(text=(f"{len(pk_all)} researched plant(s) waiting to go on the website. Double-click one for its page. "
+                                    "\"Make zip for Claude\" packs them all.") if pk_all else "Nothing waiting. Research some plants on the first tab.")
+        self.nb.tab(self.tab_wait, text=f"To be added ({len(pk_all)})")
+    def open_wait_page(self):
+        pid = (self.wait_tv.selection() or [None])[0]
+        if pid: open_path(os.path.join(g.INBOX, pid, "report.html"))
+    def remove_waiting(self):
+        pid = (self.wait_tv.selection() or [None])[0]
+        if not pid: return
+        if not messagebox.askyesno("Plant Research", f"Take {pid} off the To be added list? (Its research folder stays on the computer.)"): return
+        import json
+        left = [p for p in g.waiting() if p["id"] != pid]
+        with open(os.path.join(g.INBOX, "packets.json"), "w", encoding="utf-8") as fh: json.dump(left, fh, indent=1, ensure_ascii=False)
+        g.write_reports(left); self.fill_wait(); self.refresh_buttons()
 
     # ---- website folder (to check new plants against the ones already in the planner)
     def saved_site(self):
@@ -130,6 +218,16 @@ class App:
         items = g.parse_lines(raw.splitlines())
         if not items:
             messagebox.showinfo("Plant Research", "Type at least one plant name first."); return
+        sd = self.site_data(); found = []
+        if sd:
+            for it in list(items):
+                hit = g.site_match(sd, it[0]) or (g.site_match(sd, it[1]) if it[1] else None)
+                if hit: found.append((it[1] or it[0], hit)); items.remove(it)
+        if found:
+            msg = "Already on the website, so they won't be researched again:\n\n" + "\n".join(f"  • {t}  →  {h['name']} ({h['latin']})" for t, h in found)
+            msg += "\n\nTheir pages are on the \"On the website\" tab."
+            if not items: messagebox.showinfo("Plant Research", msg); self.nb.select(self.tab_site); self.site_q.set(found[0][1]["name"]); return
+            messagebox.showinfo("Plant Research", msg + f"\n\nResearching the other {len(items)}.")
         try:
             with open(LIST_FILE, "w", encoding="utf-8") as fh: fh.write(raw.strip() + "\n")
         except OSError: pass
@@ -146,6 +244,10 @@ class App:
         threading.Thread(target=work, daemon=True).start()
     def finish(self, err):
         self.busy = False; self.go.state(["!disabled"]); self.go.config(text="Start"); self.refresh_buttons()
+        self.fill_wait(); self.fill_site()
+        if g.ALREADY and not err:
+            messagebox.showinfo("Plant Research", "Already on the website (found after looking up the botanical name), so not researched again:\n\n"
+                                + "\n".join(f"  • {a['typed']}  →  {a['name']} ({a['latin']})" for a in g.ALREADY))
         el = int(time.time() - (self.t0 or time.time())); took = f"{el // 60}:{el % 60:02d}"
         now = datetime.datetime.now().strftime("%I:%M %p").lstrip("0")
         if err:
@@ -195,7 +297,7 @@ class App:
         bar = ttk.Frame(win); bar.pack(fill="x", padx=14, pady=10)
         def save():
             g.choose_photos({k: v.get() for k, v in choice.items()})
-            self.write("Photos chosen: " + ", ".join(f"{k} = photo {v.get() + 1}" for k, v in choice.items()))
+            self.write("Photos chosen: " + ", ".join(f"{k} = photo {v.get() + 1}" for k, v in choice.items())); self.fill_wait()
             win.destroy()
         ttk.Button(bar, text="Use these photos", style="Go.TButton", command=save).pack(side="right")
         ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", padx=8)
