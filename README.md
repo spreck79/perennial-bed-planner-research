@@ -42,6 +42,9 @@ The window has three tabs:
   botanical name, also after a common name is looked up) isn't researched again; you're told where it is instead.
 - **On the website**: every plant already in the planner, read from the website folder, with a search box. Double-click one
   for its page: photo, every detail, the photo credit, its Michigan source, care and companion plants.
+  **Update all** / **Update selected** re-check those plants (no photos) for hardiness zones and winter care; **Updates page**
+  shows what was found (and where the sources now differ from the website), and **Make update zip for Claude** packs it.
+  Claude adds it with the website's `research/add_plants.py <zip> --update`, which adds only zones and winter care.
 - **To be added**: researched plants waiting to go on the website, each with its own page. Choose photos, remove a plant
   from the list, or make the zip for Claude from here.
 

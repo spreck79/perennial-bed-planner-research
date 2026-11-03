@@ -105,13 +105,18 @@ class App:
         cols = ("name", "latin", "code", "type")
         b = ttk.Frame(t); b.pack(side="bottom", fill="x", pady=(8, 0))
         fr = ttk.Frame(t); fr.pack(fill="both", expand=True)
-        self.site_tv = ttk.Treeview(fr, columns=cols, show="headings", selectmode="browse")
+        self.site_tv = ttk.Treeview(fr, columns=cols, show="headings", selectmode="extended")
         for c, w, lab in zip(cols, (240, 260, 70, 140), ("Plant", "Botanical name", "Code", "Michigan")): self.site_tv.heading(c, text=lab); self.site_tv.column(c, width=w, anchor="w")
         sb = ttk.Scrollbar(fr, orient="vertical", command=self.site_tv.yview); self.site_tv.configure(yscrollcommand=sb.set)
         self.site_tv.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
         self.site_tv.bind("<Double-1>", lambda e: self.open_site_page())
         ttk.Button(b, text="Open its page", style="Go.TButton", command=self.open_site_page).pack(side="left")
-        ttk.Label(b, text="Double-click a plant to open its page (made from the website folder).", style="Small.TLabel").pack(side="left", padx=10)
+        ttk.Button(b, text="Make update zip for Claude", command=self.make_update_zip).pack(side="right")
+        ttk.Button(b, text="Updates page", command=self.open_updates).pack(side="right", padx=6)
+        b2 = ttk.Frame(t); b2.pack(side="bottom", fill="x", pady=(8, 0), before=b)
+        ttk.Button(b2, text="Update selected", command=lambda: self.start_update(selected=True)).pack(side="right")
+        ttk.Button(b2, text="Update all", command=lambda: self.start_update(selected=False)).pack(side="right", padx=6)
+        ttk.Label(b2, text="Hardiness zones and winter care for website plants:", style="Small.TLabel").pack(side="right", padx=(0, 4))
         self.fill_site()
     def fill_site(self):
         sd = self.site_data(); tv = self.site_tv; tv.delete(*tv.get_children())
@@ -123,6 +128,40 @@ class App:
             tv.insert("", "end", iid=p["id"], values=(p["name"], p["latin"], p.get("code", ""), "native" if p.get("native") else "garden favorite")); n += 1
         self.site_info.config(text=f"{len(sd['plants'])} plants are on the website" + (f" ({n} match the search)" if q else "") + f". Folder: {sd['site']}")
         self.nb.tab(self.tab_site, text=f"On the website ({len(sd['plants'])})")
+    def open_updates(self):
+        if os.path.isdir(g.UPDATES): open_path(g.write_update_page(self.site_data()))
+        else: messagebox.showinfo("Plant Research", "No updates yet. Use \"Update all\" or \"Update selected\" first.")
+    def start_update(self, selected):
+        if self.busy: return
+        sd = self.site_data()
+        if not sd: messagebox.showinfo("Plant Research", "The website folder wasn't found."); return
+        ids = list(self.site_tv.selection()) if selected else None
+        if selected and not ids: messagebox.showinfo("Plant Research", "Select one or more plants in the list first (Ctrl-click for several)."); return
+        n = len(ids) if ids else len(sd["plants"])
+        mins = max(1, round(n * 6 / 60))
+        if not messagebox.askyesno("Plant Research", f"Re-check {n} website plant{'s' if n != 1 else ''} for hardiness zones and winter care?\n\n"
+                                   f"This takes about {mins} minute{'s' if mins != 1 else ''} the first time. Nothing on the website changes until Claude adds the update zip."): return
+        self.mode = "update"; self.busy = True; self.go.state(["disabled"]); self.go.config(text="Working…"); self.refresh_buttons()
+        self.nb.select(0)
+        self.log.config(state="normal"); self.log.delete("1.0", "end"); self.log.config(state="disabled")
+        g.OUT = lambda m: self.q.put(("log", m))
+        g.PROGRESS = lambda d, tot, lab: self.q.put(("prog", (d, tot, lab)))
+        self.t0, self.label = time.time(), "starting"; self.bar["value"] = 0
+        self.root.title("Working… Plant Research (beta)")
+        site = self.site
+        def work():
+            try: g.run_update(ids, site=site); self.q.put(("done", None))
+            except Exception as e: self.q.put(("done", e))
+        threading.Thread(target=work, daemon=True).start()
+    def make_update_zip(self):
+        if not os.path.isdir(g.UPDATES) or not [f for f in os.listdir(g.UPDATES) if f.endswith(".json")]:
+            messagebox.showinfo("Plant Research", "No updates yet. Use \"Update all\" or \"Update selected\" first."); return
+        name = os.path.join(g.HERE, f"plant-updates-{datetime.date.today().isoformat()}.zip")
+        with zipfile.ZipFile(name, "w", zipfile.ZIP_DEFLATED) as z:
+            for fn in os.listdir(g.UPDATES):
+                z.write(os.path.join(g.UPDATES, fn), os.path.join("updates", fn))
+        self.write(f"\nMade {name}\nAttach that file in your chat with Claude.")
+        open_path(os.path.dirname(name))
     def open_site_page(self, pid=None):
         pid = pid or (self.site_tv.selection() or [None])[0]
         if not pid: return
@@ -231,7 +270,7 @@ class App:
         try:
             with open(LIST_FILE, "w", encoding="utf-8") as fh: fh.write(raw.strip() + "\n")
         except OSError: pass
-        self.busy = True; self.go.state(["disabled"]); self.go.config(text="Working…"); self.refresh_buttons()
+        self.mode = "research"; self.busy = True; self.go.state(["disabled"]); self.go.config(text="Working…"); self.refresh_buttons()
         self.log.config(state="normal"); self.log.delete("1.0", "end"); self.log.config(state="disabled")
         g.OUT = lambda m: self.q.put(("log", m))
         g.PROGRESS = lambda d, tot, lab: self.q.put(("prog", (d, tot, lab)))
@@ -255,9 +294,14 @@ class App:
             self.write(f"\nSomething went wrong: {err}"); messagebox.showerror("Plant Research", f"Something went wrong:\n{err}")
         else:
             self.bar["value"] = 100
-            self.status.set(f"Finished at {now} (took {took}). Check the photos (Choose photos…), then Make zip for Claude.")
+            upd = getattr(self, "mode", "") == "update"
+            self.status.set(f"Finished at {now} (took {took}). " + ("See the Updates page, then Make update zip for Claude (On the website tab)." if upd
+                            else "Check the photos (Choose photos…), then Make zip for Claude."))
             self.root.title("Done - Plant Research (beta)")
-            self.write("\nNext: press \"Choose photos…\" to pick the photo for each plant (photo 1 is used unless you change it),\nthen \"Make zip for Claude\" and attach the zip in your chat.")
+            if upd:
+                self.write("\nNext: on the On the website tab, look at the Updates page, then press \"Make update zip for Claude\".")
+                open_path(g.write_update_page(self.site_data()))
+            else: self.write("\nNext: press \"Choose photos…\" to pick the photo for each plant (photo 1 is used unless you change it),\nthen \"Make zip for Claude\" and attach the zip in your chat.")
             try: self.root.bell(); self.root.deiconify(); self.root.lift()
             except tk.TclError: pass
 

@@ -2,9 +2,11 @@ __pycache__/
 inbox/
 To be added/
 Website plants/
+Website updates/
 new-plants.txt
 plant-research-settings.txt
 plant-research-*.zip
+plant-updates-*.zip
 build/
 dist/
 *.spec

@@ -256,7 +256,7 @@ def src_mbg(pk):
 NCSU_LABELS = ["Height", "Width", "Plant Type", "Habit/Form", "Light", "Soil Drainage", "Soil Texture", "USDA Plant Hardiness Zone",
                "Flower Bloom Time", "Flower Color", "Flower Description", "Leaf Color", "Leaf Description", "Resistance To Challenges",
                "Poison Severity", "Poison Symptoms", "Poison Toxic Principle", "Causes Contact Dermatitis", "Poison Part",
-               "Life Cycle", "Landscape Location", "Country Or Region Of Origin", "Distribution", "Wildlife Value", "Maintenance"]
+               "Life Cycle", "Landscape Location", "Country Or Region Of Origin", "Distribution", "Wildlife Value", "Maintenance", "Bulb Storage"]
 
 def labelled_lists(text, labels):
     """NC State style: 'Label:' then one value per line until the next 'Something:' line. Values joined with '; '."""
@@ -801,6 +801,18 @@ def choose_photos(choices):
     write_reports(packets)
     return packets
 
+def winter_care(zr, kind, bulb_storage, blurb):
+    """What a plant needs to get through a zone 6B winter: None when it's fully hardy here (or zones are unknown)."""
+    if not zr: return None
+    lo = zr[0]
+    if lo == 6.5: return {"how": "mulch"}
+    if lo < 6.5: return None
+    b = ((bulb_storage or "") + " " + (blurb or "")).lower()
+    if kind == "bulb" or bulb_storage or re.search(r"\b(dig|lift)\w*\b.{0,40}\b(tuber|corm|rhizome|bulb|root)|\b(tuber|corm|rhizome)s?\b.{0,60}\b(store|storage|dig|lift)", b):
+        return {"how": "dig"}
+    if re.search(r"\b(overwinter|bring)\w*\b.{0,30}\bindoors\b|\bcontainer\b.{0,40}\bindoors\b", b): return {"how": "pot"}
+    return {"how": "annual"}
+
 def draft(pk, used_ids, used_codes):
     F = lambda k: (pk["facts"].get(k) or {}).get("value")
     W = pk["warn"]
@@ -816,7 +828,8 @@ def draft(pk, used_ids, used_codes):
         pk["facts"]["hardy_in_6b"] = {"value": "yes" if zr[0] <= 6.5 <= zr[1] else "NO",
                                       "src": "Missouri Botanical Garden" if F("mbg_zone") else "NC State",
                                       "url": "", "note": f"hardiness zones {zone_name(zr[0])} to {zone_name(zr[1])} (Michigan here is 6B)"}
-        if not (zr[0] <= 6.5 <= zr[1]): W.append(f"NOT hardy in Michigan zone 6B (sources say zones {zone_name(zr[0])} to {zone_name(zr[1])}): it won't come back each year, so it doesn't belong in the planner")
+        if zr[0] > 6.5: W.append(f"NOT hardy in Michigan zone 6B (sources say zones {zone_name(zr[0])} to {zone_name(zr[1])}): it gets winter care (see 'winter') and is left out unless people choose winter-care plants")
+        elif zr[1] < 6: W.append(f"zones {zone_name(zr[0])} to {zone_name(zr[1])} don't reach 6B: it won't grow well here")
     lists = F("michigan_lists") or []
     native = bool([x for x in lists if not x.get("flagged")])
     # light and sun
@@ -864,6 +877,8 @@ def draft(pk, used_ids, used_codes):
     if tox_pets: why_tox.insert(0, "ASPCA lists it as toxic to " + " and ".join(tox_pets))
     notes = draft_notes(F("mbg_noteworthy_characteristics"), F("ncsu_description"), F("mbg_culture"), F("ncsu_flower_description"))
     filler = kind == "mat" and h and h[1] <= 12
+    zones = [zr[0], zr[1]] if zr else None
+    winter = winter_care(zr, kind, F("ncsu_bulb_storage"), blurb)
     e = {"id": make_id(pk, used_ids), "code": make_code(pk, used_codes), "name": pk["common"] or (F("mbg_common_name") or "").title() or pk["latin"],
          "latin": pk["latin"], "native": native, "kind": kind, "filler": True if filler else None,
          "hLo": h[0] if h else None, "hHi": h[1] if h else None,
@@ -871,7 +886,7 @@ def draft(pk, used_ids, used_codes):
          "bloom": bloom, "color": color, "hex": hexc, "txt": label_color(hexc),
          "light": light, "sun": sun, "moisture": moist, "notes": notes,
          "deer": F("deer"), "toxic": (toxic or None), "toxSrc": ("; ".join(why_tox) if toxic else None),
-         "fam": "daisy" if fam == "Asteraceae" else None,
+         "fam": "daisy" if fam == "Asteraceae" else None, "zones": zones, "winter": winter,
          "credit": ({"file": pk["photos"][0]["file"].replace(" ", "_"), "by": pk["photos"][0]["by"], "lic": pk["photos"][0]["lic"]} if pk["photos"] else None)}
     dormant = bool(re.search(r"(?i)\bdorman(t|cy)\b|ephemeral|dies back|disappears? (by|in) (mid|early|late)?\s?summer", blurb))
     evergreen = bool(re.search(r"(?i)\bevergreen\b|semi-evergreen", blurb + " " + str(F("ncsu_woody_plant_leaf_characteristics") or "")))
@@ -1014,7 +1029,11 @@ def site_page(site_data, pid):
             ("Moisture", p.get("moisture")), ("Kind", p.get("kind")),
             ("Deer (Rutgers)", {"A": "A, rarely damaged", "B": "B, seldom severely damaged", "C": "C, occasionally severely damaged", "D": "D, frequently severely damaged"}.get(p.get("deer"), "not rated")),
             ("Toxic", ("to " + ", ".join(p["toxic"]) + (f" ({esc(p.get('toxSrc'))})" if p.get("toxSrc") else "")) if p.get("toxic") else "not known to be toxic"),
-            ("Care", CARE_WORDS.get(site_data["care_of"].get(pid), "Standard spring cleanup"))]
+            ("Care", CARE_WORDS.get(site_data["care_of"].get(pid), "Standard spring cleanup")),
+            ("Hardiness", (f"zones {zone_name(p['zones'][0])} to {zone_name(p['zones'][1])} (Michigan here is 6B)") if p.get("zones") else "not recorded yet (use Update website plants)"),
+            ("Winter care", {"dig": "Dig up after the first frost, store frost-free, replant in May", "pot": "Bring the pot indoors before frost",
+                             "annual": "Grows as an annual here: plant a new one each May", "mulch": "Mulch the crown once the ground freezes"}.get((p.get("winter") or {}).get("how"),
+                             "none needed" if p.get("zones") and p["zones"][0] <= 6 else "-"))]
     chips = [("Michigan native" if p.get("native") else "Garden favorite")] + (["Daisy family"] if p.get("fam") == "daisy" else []) + \
             (["Dies back early"] if p.get("dormant") else []) + (["Groundcover filler"] if p.get("filler") else [])
     h = [f"<!doctype html><meta charset=utf-8><title>{esc(p['name'])}</title><style>{PAGE_CSS}</style>",
@@ -1219,6 +1238,75 @@ def write_reports(packets):
     md = "\n".join(out) + "\n"
     with open(os.path.join(INBOX, "report.md"), "w", encoding="utf-8") as f: f.write(md)
     with open(os.path.join(INBOX, "report.html"), "w", encoding="utf-8") as f: f.write(report_html(md))
+
+UPDATES = os.path.join(HERE, "Website updates")      # zones / winter care prepared for plants already on the website
+UPDATE_FIELDS = ["zones", "winter"]                    # the fields an update adds; everything else is only compared
+COMPARE = ["hLo", "hHi", "spacing", "bloom", "sun", "moisture", "kind", "deer", "toxic"]
+
+def run_update(ids=None, fresh=False, site=None):
+    """Research plants already on the website (all, or the ids given) without photos, and prepare only the new
+    fields (zones, winter care) in "Website updates". Also lists where the sources now disagree with the website."""
+    global FRESH, SITE
+    FRESH = fresh; del LOG[:]; DEAD.clear(); _shared.clear()
+    SITE = find_site(site); sd = load_site()
+    if not sd: raise RuntimeError("Couldn't find the website folder, so there's nothing to update.")
+    plants = [p for p in sd["plants"] if not ids or p["id"] in ids]
+    os.makedirs(UPDATES, exist_ok=True)
+    steps = [("name check (GBIF)", src_gbif), ("Missouri Botanical Garden", src_mbg), ("NC State", src_ncsu),
+             ("Rutgers deer list", src_rutgers), ("ASPCA", src_aspca)]
+    total, done, out = len(plants) * len(steps), 0, []
+    def prog(label):
+        if PROGRESS:
+            try: PROGRESS(done, total, label)
+            except Exception: pass
+    for n, p in enumerate(plants, 1):
+        say(f"[{n}/{len(plants)}] {p['name']} ({p['latin']})")
+        pk = {"latin": p["latin"], "common": p["name"], "id": p["id"], "facts": {}, "synonyms": [], "pages": [], "photos": [], "missing": [], "warn": []}
+        for step, fn in steps:
+            prog(f"Plant {n} of {len(plants)}, {p['name']}: {step}")
+            try: fn(pk)
+            except Exception as e: pk["missing"].append(f"{step} failed ({e})")
+            done += 1
+        try: draft(pk, set(), set())
+        except Exception as e: pk["missing"].append(f"couldn't make the entry ({e})"); pk["draft"] = {}
+        d = pk["draft"]
+        upd = {"id": p["id"], "name": p["name"], "latin": p["latin"], "set": {k: d.get(k) for k in UPDATE_FIELDS if d.get(k) is not None},
+               "differences": {k: {"website": p.get(k), "sources": d.get(k)} for k in COMPARE if d.get(k) not in (None, []) and d.get(k) != p.get(k)},
+               "zones_found": bool(d.get("zones")), "missing": pk["missing"], "warn": pk["warn"], "made": datetime.date.today().isoformat()}
+        with open(os.path.join(UPDATES, p["id"] + ".json"), "w", encoding="utf-8") as f: json.dump(upd, f, indent=1, ensure_ascii=False)
+        out.append(upd)
+        if d.get("winter"): say(f"    winter care: {d['winter']['how']} (zones {zone_name(d['zones'][0])} to {zone_name(d['zones'][1])})")
+        elif d.get("zones"): say(f"    hardy here (zones {zone_name(d['zones'][0])} to {zone_name(d['zones'][1])})")
+        else: say("    ! no hardiness zones found")
+    write_update_page(sd)
+    done = total; prog("Finished")
+    say(f"\nDone: {len(out)} plants checked. Open the updates page, then make the update zip for Claude.")
+    return out
+
+def write_update_page(sd=None):
+    sd = sd or load_site(); esc = lambda v: html.escape(str(v))
+    ups = []
+    for f in sorted(os.listdir(UPDATES)) if os.path.isdir(UPDATES) else []:
+        if f.endswith(".json"):
+            try: ups.append(json.load(open(os.path.join(UPDATES, f), encoding="utf-8")))
+            except ValueError: pass
+    tender = [u for u in ups if (u["set"].get("winter") or {}).get("how") not in (None, "mulch")]
+    edge = [u for u in ups if (u["set"].get("winter") or {}).get("how") == "mulch"]
+    nozone = [u for u in ups if not u.get("zones_found")]
+    zn = lambda u: f"{zone_name(u['set']['zones'][0])} to {zone_name(u['set']['zones'][1])}" if u["set"].get("zones") else "not found"
+    h = [f"<!doctype html><meta charset=utf-8><title>Website plant updates</title><style>{PAGE_CSS}</style>",
+         f"<h1>Updates for plants on the website</h1><p class=small>{len(ups)} plants checked. An update adds only hardiness zones and winter care; "
+         "nothing else on the website changes. Differences are listed so they can be looked at, not changed automatically.</p>",
+         f"<h2>Need winter care here ({len(tender)})</h2><ul>" + ("".join(f"<li><b>{esc(u['name'])}</b>: {esc(u['set']['winter']['how'])} (zones {zn(u)})</li>" for u in tender) or "<li>none</li>") + "</ul>",
+         f"<h2>Hardy only to 6B: winter mulch ({len(edge)})</h2><ul>" + ("".join(f"<li><b>{esc(u['name'])}</b> (zones {zn(u)})</li>" for u in edge) or "<li>none</li>") + "</ul>",
+         f"<h2>No zones found ({len(nozone)})</h2><ul>" + ("".join(f"<li>{esc(u['name'])}</li>" for u in nozone) or "<li>none</li>") + "</ul>",
+         "<h2>Every plant</h2><table><tr><th>Plant</th><th>Zones</th><th>Winter</th><th>Sources differ from the website on</th></tr>"]
+    for u in ups:
+        diffs = "; ".join(f"{k}: website {esc(v['website'])}, sources {esc(v['sources'])}" for k, v in u["differences"].items()) or "-"
+        h.append(f"<tr><td><b>{esc(u['name'])}</b><br><span class=small>{esc(u['latin'])}</span></td><td>{zn(u)}</td><td>{esc((u['set'].get('winter') or {}).get('how', 'hardy'))}</td><td class=small>{diffs}</td></tr>")
+    h.append("</table>")
+    with open(os.path.join(UPDATES, "updates.html"), "w", encoding="utf-8") as f: f.write("\n".join(h))
+    return os.path.join(UPDATES, "updates.html")
 
 def report_html(md):
     """The report as a plain web page, so it opens with a double-click on Windows."""
