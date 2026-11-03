@@ -26,7 +26,7 @@ class App:
     def __init__(self, root):
         self.root, self.q, self.busy = root, queue.Queue(), False
         root.title("Plant Research (beta): Perennial Bed Planner")
-        root.geometry("820x700"); root.minsize(600, 520); root.configure(bg=BG)
+        root.geometry("820x680"); root.minsize(600, 480); root.configure(bg=BG)
         st = ttk.Style(root)
         try: st.theme_use("clam")
         except tk.TclError: pass
@@ -75,11 +75,11 @@ class App:
         self.bar = ttk.Progressbar(stat, mode="determinate", maximum=100, style="Green.Horizontal.TProgressbar")
         self.bar.pack(fill="x", pady=(4, 0))
         self.t0, self.label = None, ""
+        bot = ttk.Frame(f); bot.pack(side="bottom", fill="x", pady=(8, 0))
         ttk.Label(f, text="Details", style="Small.TLabel").pack(anchor="w", pady=(10, 2))
-        self.log = ScrolledText(f, height=12, wrap="word", font=("Consolas", 9), relief="solid", borderwidth=1, state="disabled", background="#FBFAF6")
+        self.log = ScrolledText(f, height=6, wrap="word", font=("Consolas", 9), relief="solid", borderwidth=1, state="disabled", background="#FBFAF6")
         self.log.pack(fill="both", expand=True)
 
-        bot = ttk.Frame(f); bot.pack(fill="x", pady=(8, 0))
         self.b_report = ttk.Button(bot, text="Open overview", command=lambda: open_path(os.path.join(g.INBOX, "report.html")))
         self.b_folder = ttk.Button(bot, text="Open To be added folder", command=lambda: open_path(g.INBOX))
         self.b_zip = ttk.Button(bot, text="Make zip for Claude", command=self.make_zip)
@@ -103,13 +103,13 @@ class App:
         ttk.Button(top, text="Refresh", command=self.fill_site).pack(side="right")
         self.site_info = ttk.Label(t, style="Small.TLabel", wraplength=740, justify="left"); self.site_info.pack(anchor="w", pady=(8, 6))
         cols = ("name", "latin", "code", "type")
+        b = ttk.Frame(t); b.pack(side="bottom", fill="x", pady=(8, 0))
         fr = ttk.Frame(t); fr.pack(fill="both", expand=True)
         self.site_tv = ttk.Treeview(fr, columns=cols, show="headings", selectmode="browse")
         for c, w, lab in zip(cols, (240, 260, 70, 140), ("Plant", "Botanical name", "Code", "Michigan")): self.site_tv.heading(c, text=lab); self.site_tv.column(c, width=w, anchor="w")
         sb = ttk.Scrollbar(fr, orient="vertical", command=self.site_tv.yview); self.site_tv.configure(yscrollcommand=sb.set)
         self.site_tv.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
         self.site_tv.bind("<Double-1>", lambda e: self.open_site_page())
-        b = ttk.Frame(t); b.pack(fill="x", pady=(8, 0))
         ttk.Button(b, text="Open its page", style="Go.TButton", command=self.open_site_page).pack(side="left")
         ttk.Label(b, text="Double-click a plant to open its page (made from the website folder).", style="Small.TLabel").pack(side="left", padx=10)
         self.fill_site()
@@ -134,13 +134,13 @@ class App:
         t = self.tab_wait
         self.wait_info = ttk.Label(t, style="Small.TLabel", wraplength=740, justify="left"); self.wait_info.pack(anchor="w", pady=(0, 6))
         cols = ("name", "latin", "photo", "notes")
+        b = ttk.Frame(t); b.pack(side="bottom", fill="x", pady=(8, 0))
         fr = ttk.Frame(t); fr.pack(fill="both", expand=True)
         self.wait_tv = ttk.Treeview(fr, columns=cols, show="headings", selectmode="browse")
         for c, w, lab in zip(cols, (200, 210, 70, 260), ("Plant", "Botanical name", "Photo", "Check")): self.wait_tv.heading(c, text=lab); self.wait_tv.column(c, width=w, anchor="w")
         sb = ttk.Scrollbar(fr, orient="vertical", command=self.wait_tv.yview); self.wait_tv.configure(yscrollcommand=sb.set)
         self.wait_tv.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
         self.wait_tv.bind("<Double-1>", lambda e: self.open_wait_page())
-        b = ttk.Frame(t); b.pack(fill="x", pady=(8, 0))
         ttk.Button(b, text="Open its page", style="Go.TButton", command=self.open_wait_page).pack(side="left")
         ttk.Button(b, text="Choose photos…", command=self.pick_photos).pack(side="left", padx=6)
         ttk.Button(b, text="Remove from list", command=self.remove_waiting).pack(side="left")

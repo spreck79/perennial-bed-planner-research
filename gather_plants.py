@@ -200,10 +200,20 @@ def labelled(text, labels):
             if v and not any(v.lower().startswith(l.lower() + ":") for l in labels): out[lab] = v
     return out
 
+MBG_ROOT = "https://www.missouribotanicalgarden.org/"
 def mbg_search_urls(q):
-    gen = binomial(q).split()[0]
-    return [MBG + "PlantFinderSearchResults.aspx?basic=" + urllib.parse.quote(q),      # basic search (older address)
-            MBG + "PlantFinderProfileResults.aspx?gen=" + urllib.parse.quote(gen)]      # results for the whole genus (newer address)
+    gen = binomial(q).split()[0]; out = []
+    for base in (MBG_ROOT, MBG):          # the Plant Finder pages now sit at the top of the site; the old folder is a fallback
+        out += [base + "PlantFinderProfileResults.aspx?gen=" + urllib.parse.quote(gen),   # every plant in the genus
+                base + "PlantFinderSearchResults.aspx?basic=" + urllib.parse.quote(q)]    # basic search
+    return out
+
+def mbg_detail_urls(href, page_url):
+    """A plant's detail page, at the address the link gives and at the other Plant Finder location."""
+    first = urllib.parse.urljoin(page_url, href)
+    q = urllib.parse.urlsplit(first).query
+    alts = [first] + [b + "PlantFinderDetails.aspx?" + q for b in (MBG_ROOT, MBG)]
+    return list(dict.fromkeys(alts))
 
 def src_mbg(pk):
     tried = []
@@ -227,7 +237,11 @@ def src_mbg(pk):
                         if "plantfinderdetails.aspx" in href.lower():
                             det_url = urllib.parse.urljoin(url, href); pk["warn"].append(f"Missouri Botanical Garden: no result named '{q}', used the first result ({txt.strip()[:60]}): check it's the right plant"); break
                 if not det_url: continue
-                det = fetch(det_url)
+                det = None
+                for u in mbg_detail_urls(det_url, url):
+                    tried.append(u); det = fetch(u)
+                    if det and re.search(r"(?i)Bloom Time\s*:|Height\s*:", page_text(det)[0]): det_url = u; break
+                    det = None
                 if not det: continue
             text, _ = page_text(det)
             save_page(pk, "missouri-botanical-garden", det_url, text)
@@ -320,7 +334,8 @@ def rutgers_entries(text):
 def src_rutgers(pk):
     want = norm(binomial(pk["latin"])); gen = binomial(pk["latin"]).split()[0]
     entries, url_used, any_read = [], RUTGERS, False
-    for kw in [gen, pk.get("common") or ""] + [s.split()[0] for s in pk["synonyms"]]:
+    words = [w for w in re.findall(r"[A-Za-z]+", pk.get("common") or "") if len(w) > 3 and w.lower() not in ("wild", "garden", "common", "plant", "sweet", "great", "little")]
+    for kw in list(dict.fromkeys([gen, pk.get("common") or ""] + words[::-1] + [x.split()[0] for x in pk["synonyms"]])):
         if not kw: continue
         url = RUTGERS + "?" + urllib.parse.urlencode({"keys": kw})
         t = fetch(url)
@@ -332,6 +347,16 @@ def src_rutgers(pk):
             if any(norm(binomial(e["latin"])) == want for e in found): break
     if not any_read:
         pk["missing"].append("Rutgers deer list " + ("couldn't be reached" if unreachable(RUTGERS) else "couldn't be read")); return
+    if not entries:          # its search only matches the name as Rutgers words it, so read the whole list (kept for a week)
+        if "rutgers_all" not in _shared:
+            allp = []
+            for page in range(0, 40):
+                t = fetch(RUTGERS + ("?page=%d" % page if page else ""))
+                found = rutgers_entries(page_text(t)[0]) if t else []
+                if not found: break
+                allp += found
+            _shared["rutgers_all"] = allp
+        entries, url_used = _shared["rutgers_all"], RUTGERS
     exact = [e for e in entries if norm(binomial(e["latin"])) == want]
     genus = [e for e in entries if norm(e["latin"]).split()[:1] == [norm(gen)] and re.search(r"\bspp?\.?(\s|$)|\(", e["latin"] + " ")]
     same_common = [e for e in entries if pk.get("common") and norm(e["common"]) == norm(pk["common"])]   # old names: Dicentra = Lamprocapnos
@@ -583,8 +608,10 @@ def soil_words(moist, texture, drain):
     bits = []
     t = (texture or "").lower(); d = (drain or "").lower()
     if "organic" in t or "rich" in t: bits.append("rich")
-    if moist and "moist" in moist.lower(): bits.append("moist")
-    if moist and moist.lower().startswith("dry"): bits.append("dry to average")
+    ml = (moist or "").lower()
+    if ml.startswith("dry") and "moist" in ml: bits.append("dry to moist")
+    elif ml.startswith("dry"): bits.append("dry to average")
+    elif "moist" in ml: bits.append("moist")
     if "good drainage" in d or "well-drained" in d: bits.append("well-drained")
     return (", ".join(bits) + " soil") if bits else ""
 
@@ -618,7 +645,7 @@ def photo_color(path, foliage=False):
         else:
             if vv < 0.22: continue
             if ss < 0.12 and vv > 0.82: key = "white"                          # white and pale flowers
-            elif green or ss < 0.22 or (0.05 <= hh <= 0.13 and vv < 0.55): continue   # leaves, sky-greys, soil and shadows
+            elif green or ss < 0.22 or (0.05 <= hh <= 0.13 and vv < 0.55) or (0.12 <= hh <= 0.2 and ss < 0.45): continue   # leaves, sky, soil, shade
             else: key = int(hh * 24) % 24
         weight = centre * (1.6 if key == "white" else (0.5 + ss) * vv)
         bt = bins.setdefault(key, [0.0, 0.0, 0.0, 0.0]); bt[0] += weight; bt[1] += r * weight; bt[2] += g * weight; bt[3] += b * weight
@@ -706,8 +733,10 @@ def kind_from(fam, mbg_type, ncsu_type, blurb):
     if fam in FERN_FAMS or "fern" in t: return "fern", "family or plant type"
     if fam in ("Poaceae", "Cyperaceae", "Juncaceae") or "grass" in t or "sedge" in t: return "grass", "family or plant type"
     if "bulb" in t: return "bulb", "plant type says bulb"
-    if "ground cover" in t or "groundcover" in t or re.search(r"(?i)ground ?cover|stolon|forms? (a )?(dense )?(mat|carpet|colon)", blurb or ""):
-        return "mat", "described as a groundcover"
+    if "ground cover" in t or "groundcover" in t:
+        return "mat", "plant type says groundcover"
+    if re.search(r"(?i)\b(spreads|spreading) (by|through) (stolons|runners|rhizomes) to form (a )?(dense )?(mat|carpet|groundcover)", blurb or ""):
+        return "mat", "described as spreading into a mat"
     return "clump", "no sign of fern, grass, bulb or groundcover"
 
 def care_group(kind, fam, blurb, dormant, evergreen_hint):
@@ -805,12 +834,18 @@ def draft(pk, used_ids, used_codes):
     words_for_hex = (F("ncsu_leaf_color") or "green") if foliage else ("" if many else src_colors)
     hexc, how_hex = word_hex(words_for_hex), "the color named by the sources"
     if hexc and photo1: hexc = refine_with_photo(hexc, photo1)
+    if not hexc and many and not foliage:
+        desc_hex = word_hex(F("ncsu_flower_description") or "") or word_hex(F("mbg_noteworthy_characteristics") or "")
+        if desc_hex: hexc, how_hex = (refine_with_photo(desc_hex, photo1) if photo1 else desc_hex), "the color in the flower description"
     if not hexc and many and photo1: hexc, how_hex = photo_color(photo1, foliage), "main color of photo 1 (sold in many colors)"
     if not hexc and photo1: hexc, how_hex = photo_color(photo1, foliage), "main color of photo 1 (no source named a color)"
     if foliage:
         color = (F("ncsu_leaf_color") or "Green").split(";")[0].strip() + " leaves"
     elif src_colors and not many:
         color = re.sub(r"\s*;\s*", " / ", src_colors).strip().capitalize()
+    elif many and how_hex == "the color in the flower description":
+        words = re.findall(r"(?i)\b(white|cream|yellow|gold|orange|red|scarlet|pink|rose|magenta|lavender|lilac|purple|violet|blue)\b", F("ncsu_flower_description") or "")
+        color = " and ".join(dict.fromkeys(w.lower() for w in words[:3])).capitalize() or None
     elif hexc:
         color = "Many colors (" + color_name(tuple(int(hexc[i:i + 2], 16) for i in (1, 3, 5))) + " shown)" if many else color_name(tuple(int(hexc[i:i + 2], 16) for i in (1, 3, 5))).capitalize()
     else:
