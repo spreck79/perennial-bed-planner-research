@@ -21,14 +21,14 @@ Lines starting with # are ignored. For example:
 
 For each plant it visits the same trusted sources every time, saves a plain-text copy of every page it read,
 pulls out the facts it can find, downloads free-licensed photos from Wikimedia Commons with their credits,
-and writes a draft plants.js entry. Everything goes into the  inbox  folder next to this script:
+and writes a draft plants.js entry. Everything goes into the  "To be added"  folder next to this script:
 
-    inbox/report.md               easy-to-read summary of every plant: what was found, where, and what's missing
-    inbox/packets.json            the same, as data
-    inbox/<id>/photo-1.jpg ...    up to 3 photo choices, with their credits in packets.json
-    inbox/<id>/pages/*.txt        the text of each source page, with its link at the top
+    To be added/report.md               easy-to-read summary of every plant: what was found, where, and what's missing
+    To be added/packets.json            the same, as data
+    To be added/<id>/photo-1.jpg ...    up to 3 photo choices, with their credits in packets.json
+    To be added/<id>/pages/*.txt        the text of each source page, with its link at the top
 
-Then zip the inbox folder and give it to Claude (or point Claude at it) and say which plants to add.
+Then press "Make zip for Claude" in the window (or zip the "To be added" folder) and say which plants to add.
 Claude checks the facts against the saved pages, finishes the entry and runs the rest of the website's
 research/ADDING-A-PLANT.md (photo, companions, sources, final check).
 
@@ -51,7 +51,7 @@ try:
 except Exception:
     pass
 
-# when built as a Windows program, keep the inbox next to the .exe (not in the temporary unpack folder)
+# when built as a Windows program, keep the folders next to the .exe (not in the temporary unpack folder)
 HERE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 INBOX = os.path.join(HERE, "To be added")            # researched plants waiting to go on the website
 SITE_PAGES = os.path.join(HERE, "Website plants")     # pages made for plants already on the website
@@ -732,7 +732,7 @@ def status_record(pk):
     return None
 
 def build_package(pk, choice=0):
-    """Everything the website needs for this plant, made from the chosen photo, in inbox/<id>/website/."""
+    """Everything the website needs for this plant, made from the chosen photo, in To be added/<id>/website/."""
     d = os.path.join(INBOX, pk["id"], "website"); os.makedirs(d, exist_ok=True)
     entry = dict(pk["draft"]); photo = None
     if pk["photos"]:
@@ -1090,7 +1090,7 @@ def report(packets, rel=None):
     return "\n".join(out) + "\n"
 
 def run(items, photos=True, fresh=False, site=None):
-    """Research every (name, common name) in items; writes inbox/report.md and packets.json. Returns the packets."""
+    """Research every (name, common name) in items; writes the pages and packets.json in "To be added". Returns the packets."""
     global FRESH, SITE
     FRESH = fresh; del LOG[:]; DEAD.clear(); _shared.clear()
     SITE = find_site(site)
